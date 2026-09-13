@@ -457,3 +457,130 @@ let handle_webhook (state : App_state.t) (inst : Config.instance) (body : Yojson
               ("action", `String "select");
               ("media_ids", `List (List.map (fun i -> `Int i) ids));
             ])
+
+(* ------------------------------------------------------------------ *)
+(* Seerr / Overseerr / Jellyseerr webhook                              *)
+(* ------------------------------------------------------------------ *)
+
+(** Seerr notification types that mean "this media was just requested and
+    approved", i.e. Sonarr/Radarr are about to (or just did) add it. *)
+let seerr_trigger_types = [ "MEDIA_APPROVED"; "MEDIA_AUTO_APPROVED" ]
+
+(** Decide what a Seerr notification should cause. Pure so it can be unit
+    tested. *)
+let seerr_action ~(trigger_enabled : bool) (ev : Client.seerr_event) =
+  let nt = String.uppercase_ascii ev.Client.seerr_notification_type in
+  if nt = "TEST_NOTIFICATION" then `Test
+  else if not trigger_enabled then `Ignored "webhook triggers are disabled"
+  else if not (List.mem nt seerr_trigger_types) then `Ignored ("event not actionable: " ^ nt)
+  else
+    match ev.Client.seerr_media_type with
+    | Some "movie" when ev.Client.seerr_tmdb_id <> None -> `Resolve Types.Radarr
+    | Some "tv" when ev.Client.seerr_tvdb_id <> None -> `Resolve Types.Sonarr
+    | Some "tv" -> `Ignored "tv request without a tvdbId"
+    | Some "movie" -> `Ignored "movie request without a tmdbId"
+    | Some other -> `Ignored ("unknown media_type: " ^ other)
+    | None -> `Ignored "notification carries no media"
+
+(** How long to wait before looking the request up in Sonarr/Radarr: Seerr
+    sends the notification as it approves, before the *arr has finished
+    adding the item, so the first lookup is delayed and retried. *)
+let seerr_initial_delay = 20.0
+let seerr_retry_delay = 60.0
+let seerr_max_attempts = 5
+
+(** Background job: resolve the Seerr request against every enabled instance
+    of the right app (retrying while the *arr is still adding it) and run a
+    selection for each matching media id. *)
+let seerr_resolve_and_select (state : App_state.t) (app : Types.app) (ev : Client.seerr_event) =
+  let cfg = App_state.config state in
+  let a = cfg.automatic in
+  let label = Option.value ev.Client.seerr_subject ~default:"(untitled)" in
+  let instances =
+    List.filter (fun (i : Config.instance) -> i.inst_enabled && i.inst_app = app) cfg.instances
+  in
+  let select inst media_id =
+    record_attempt state.App_state.scheduler inst.Config.inst_id media_id;
+    Lwt.catch
+      (fun () ->
+        Lwt.map
+          (function
+            | Ok (_ : Types.selection_result) -> ()
+            | Error e -> Log_buffer.warnf "seerr: %s: %s" inst.Config.inst_name (Selection.error_to_string e))
+          (Selection.run ~grab_allowed:(should_grab a) state inst ~media_id
+             { Selection.grab = a.auto_grab; instruction = None; use_ai = None }))
+      (fun exn ->
+        Log_buffer.errorf "seerr: selection failed: %s" (Printexc.to_string exn);
+        Lwt.return_unit)
+  in
+  let rec attempt n =
+    let* () = Lwt_unix.sleep (if n = 1 then seerr_initial_delay else seerr_retry_delay) in
+    let* found =
+      Lwt_list.map_s
+        (fun inst ->
+          let client = App_state.client state inst in
+          let* r =
+            Client.resolve_external client ~tmdb_id:ev.Client.seerr_tmdb_id
+              ~tvdb_id:ev.Client.seerr_tvdb_id ~seasons:ev.Client.seerr_seasons
+          in
+          match r with
+          | Error e ->
+              Log_buffer.warnf "seerr: %s: lookup failed: %s" inst.Config.inst_name
+                (Client.error_to_string e);
+              Lwt.return (inst, [])
+          | Ok ids -> Lwt.return (inst, ids))
+        instances
+    in
+    let total = List.fold_left (fun acc (_, ids) -> acc + List.length ids) 0 found in
+    if total > 0 then (
+      Log_buffer.infof "seerr: \"%s\" resolved to %d item(s); running selection" label total;
+      Lwt_list.iter_s (fun (inst, ids) -> Lwt_list.iter_s (select inst) ids) found)
+    else if n < seerr_max_attempts then (
+      Log_buffer.infof "seerr: \"%s\" not in %s yet (attempt %d/%d); retrying" label
+        (Types.app_to_string app) n seerr_max_attempts;
+      attempt (n + 1))
+    else (
+      Log_buffer.warnf "seerr: \"%s\" never appeared as a monitored, missing item in %s; giving up"
+        label (Types.app_to_string app);
+      Lwt.return_unit)
+  in
+  if instances = [] then (
+    Log_buffer.warnf "seerr: \"%s\" is a %s request but no enabled %s instance is configured"
+      label (Types.app_to_string app) (Types.app_to_string app);
+    Lwt.return_unit)
+  else attempt 1
+
+(** Handle a Seerr webhook body. Always acknowledges; the lookup and
+    selection run in the background so Seerr's request returns immediately. *)
+let handle_seerr_webhook (state : App_state.t) (body : Yojson.Safe.t) : Yojson.Safe.t =
+  let cfg = App_state.config state in
+  match Client.parse_seerr_webhook body with
+  | Error e ->
+      Log_buffer.warnf "seerr: unparseable payload: %s" e;
+      `Assoc [ ("accepted", `Bool false); ("error", `String e) ]
+  | Ok ev -> (
+      let nt = ev.Client.seerr_notification_type in
+      match seerr_action ~trigger_enabled:cfg.automatic.auto_webhook_trigger ev with
+      | `Test ->
+          Log_buffer.infof "seerr: test notification received";
+          `Assoc [ ("accepted", `Bool true); ("event", `String nt); ("action", `String "test") ]
+      | `Ignored why ->
+          `Assoc
+            [
+              ("accepted", `Bool true);
+              ("event", `String nt);
+              ("action", `String "ignored");
+              ("detail", `String why);
+            ]
+      | `Resolve app ->
+          Log_buffer.infof "seerr: %s for \"%s\" (%s); scheduling lookup" nt
+            (Option.value ev.Client.seerr_subject ~default:"?")
+            (Types.app_to_string app);
+          Lwt.async (fun () -> seerr_resolve_and_select state app ev);
+          `Assoc
+            [
+              ("accepted", `Bool true);
+              ("event", `String nt);
+              ("action", `String "resolve_and_select");
+              ("app", `String (Types.app_to_string app));
+            ])

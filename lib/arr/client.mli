@@ -63,3 +63,27 @@ val parse_webhook :
 (** Parse an incoming Sonarr/Radarr webhook body into its event type
     (["Grab"], ["Download"], ["Test"], ["SeriesAdd"], ["MovieAdded"], ...)
     and the affected media ids. *)
+
+val resolve_external :
+  t -> tmdb_id:int option -> tvdb_id:int option -> seasons:int list -> (int list, error) result Lwt.t
+(** Map external ids onto this instance's media ids.  Radarr: the monitored,
+    file-less movie with that TMDB id ([GET /api/v3/movie?tmdbId=]).  Sonarr:
+    the monitored, missing episodes of the series with that TVDB id
+    ([GET /api/v3/series?tvdbId=] then [GET /api/v3/episode?seriesId=]),
+    restricted to [seasons] when non-empty.  Specials (season 0) are skipped.
+    Returns [[]] when nothing matches. *)
+
+(** A parsed Seerr / Overseerr / Jellyseerr webhook notification. *)
+type seerr_event = {
+  seerr_notification_type : string;  (** e.g. MEDIA_APPROVED, MEDIA_AUTO_APPROVED, TEST_NOTIFICATION *)
+  seerr_media_type : string option;  (** "movie" | "tv" *)
+  seerr_tmdb_id : int option;
+  seerr_tvdb_id : int option;
+  seerr_seasons : int list;  (** from the "Requested Seasons" extra *)
+  seerr_subject : string option;
+}
+
+val parse_seerr_webhook : Yojson.Safe.t -> (seerr_event, string) result
+(** Parse the default Seerr webhook JSON payload
+    ({notification_type, subject, media:{media_type,tmdbId,tvdbId,...}, extra:[{name,value}]}).
+    Numeric ids are accepted as strings (Seerr's template output) or numbers. *)

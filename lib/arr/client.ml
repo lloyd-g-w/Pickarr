@@ -241,3 +241,116 @@ let recently_grabbed_media_ids t ~since_hours =
                |> List.sort_uniq compare)))
 
 let parse_webhook = Mapping.parse_webhook
+
+(* ------------------------------------------------------------------ *)
+(* External-id lookups (Seerr integration)                             *)
+(* ------------------------------------------------------------------ *)
+
+let ok x = Lwt.return (Ok x)
+
+let resolve_external t ~(tmdb_id : int option) ~(tvdb_id : int option)
+    ~(seasons : int list) =
+  let base_url = base t and api_key = key t in
+  match (app t, tmdb_id, tvdb_id) with
+  | T.Radarr, Some tmdb, _ -> (
+      let* r = Radarr.movies_by_tmdb_id ~base_url ~api_key tmdb in
+      match r with
+      | Error e -> Lwt.return (Error e)
+      | Ok movies ->
+          ok
+            (List.filter_map
+               (fun (m : Radarr.movie_resource) ->
+                 if m.Radarr.mr_monitored && not m.Radarr.mr_has_file then Some m.Radarr.mr_id
+                 else None)
+               movies))
+  | T.Sonarr, _, Some tvdb -> (
+      let* r = Sonarr.series_by_tvdb_id ~base_url ~api_key tvdb in
+      match r with
+      | Error e -> Lwt.return (Error e)
+      | Ok [] -> ok []
+      | Ok (series :: _) -> (
+          let sid = series.Sonarr.sr_id in
+          let fetch season = Sonarr.episodes_of_series ~base_url ~api_key ?season sid in
+          let* eps =
+            match seasons with
+            | [] -> fetch None
+            | seasons ->
+                let* per_season = Lwt_list.map_s (fun n -> fetch (Some n)) seasons in
+                Lwt.return
+                  (List.fold_left
+                     (fun acc r ->
+                       match (acc, r) with
+                       | Error e, _ -> Error e
+                       | Ok l, Ok more -> Ok (l @ more)
+                       | Ok _, Error e -> Error e)
+                     (Ok []) per_season)
+          in
+          match eps with
+          | Error e -> Lwt.return (Error e)
+          | Ok eps ->
+              ok
+                (List.filter_map
+                   (fun (e : Sonarr.episode_resource) ->
+                     if e.Sonarr.er_monitored && (not e.Sonarr.er_has_file)
+                        && e.Sonarr.er_season_number > 0
+                     then Some e.Sonarr.er_id
+                     else None)
+                   eps)))
+  | _ -> ok []
+
+(* ------------------------------------------------------------------ *)
+(* Seerr / Overseerr / Jellyseerr webhook                              *)
+(* ------------------------------------------------------------------ *)
+
+type seerr_event = {
+  seerr_notification_type : string;
+  seerr_media_type : string option;
+  seerr_tmdb_id : int option;
+  seerr_tvdb_id : int option;
+  seerr_seasons : int list;
+  seerr_subject : string option;
+}
+
+let parse_seerr_webhook (j : Yojson.Safe.t) : (seerr_event, string) result =
+  let member k v = match v with `Assoc l -> List.assoc_opt k l | _ -> None in
+  let str k v =
+    match member k v with
+    | Some (`String s) when String.trim s <> "" -> Some (String.trim s)
+    | _ -> None
+  in
+  (* Seerr substitutes template variables as strings ("11111"), but a custom
+     payload may send real numbers. *)
+  let int k v =
+    match member k v with
+    | Some (`Int i) -> Some i
+    | Some (`Intlit s) | Some (`String s) -> int_of_string_opt (String.trim s)
+    | Some (`Float f) -> Some (int_of_float f)
+    | _ -> None
+  in
+  match str "notification_type" j with
+  | None -> Error "missing notification_type"
+  | Some nt ->
+      let media = match member "media" j with Some (`Assoc _ as m) -> m | _ -> `Null in
+      let seasons =
+        match member "extra" j with
+        | Some (`List extras) ->
+            List.concat_map
+              (fun e ->
+                match (str "name" e, str "value" e) with
+                | Some name, Some value
+                  when String.lowercase_ascii name = "requested seasons" ->
+                    String.split_on_char ',' value
+                    |> List.filter_map (fun s -> int_of_string_opt (String.trim s))
+                | _ -> [])
+              extras
+        | _ -> []
+      in
+      Ok
+        {
+          seerr_notification_type = nt;
+          seerr_media_type = Option.map String.lowercase_ascii (str "media_type" media);
+          seerr_tmdb_id = int "tmdbId" media;
+          seerr_tvdb_id = int "tvdbId" media;
+          seerr_seasons = seasons;
+          seerr_subject = str "subject" j;
+        }

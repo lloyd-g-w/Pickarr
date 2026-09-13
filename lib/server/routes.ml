@@ -77,7 +77,21 @@ let request_path request =
 let given_api_key request =
   match Dream.header request "X-Api-Key" with
   | Some k -> Some k
-  | None -> Dream.query request "apikey"
+  | None -> (
+      match Dream.query request "apikey" with
+      | Some k -> Some k
+      | None -> (
+          (* Seerr's webhook agent can send a configurable Authorization
+             header; accept the raw key or "Bearer <key>". *)
+          match Dream.header request "Authorization" with
+          | Some v ->
+              let v = String.trim v in
+              let prefix = "Bearer " in
+              let lp = String.length prefix in
+              if String.length v > lp && String.lowercase_ascii (String.sub v 0 lp) = String.lowercase_ascii prefix
+              then Some (String.trim (String.sub v lp (String.length v - lp)))
+              else Some v
+          | None -> None))
 
 let session_user request = Dream.session_field request Auth.session_field
 
@@ -617,6 +631,22 @@ let webhook (state : App_state.t) request =
           respond_json (`Assoc [ ("accepted", `Bool false); ("error", `String e) ])
       | Ok body -> respond_json (Automatic.handle_webhook state inst body))
 
+(* Seerr / Overseerr / Jellyseerr: POST /api/webhook/seerr with the default
+   Seerr JSON payload. Authenticate with ?apikey=<key> in the URL or by
+   setting Seerr's "Authorization Header" to the Pickarr API key. *)
+let seerr_webhook (state : App_state.t) request =
+  let auth = state.App_state.auth in
+  if Auth.auth_required auth && not (authenticated state request) then (
+    Log_buffer.warnf "seerr: rejected an unauthenticated call (add ?apikey=<key> to the URL or set the Authorization header)";
+    error_json `Unauthorized "unauthorized")
+  else
+    let* body = json_body request in
+    match body with
+    | Error e ->
+        Log_buffer.warnf "seerr: %s" e;
+        respond_json (`Assoc [ ("accepted", `Bool false); ("error", `String e) ])
+    | Ok body -> respond_json (Automatic.handle_seerr_webhook state body)
+
 (* ------------------------------------------------------------------ *)
 (* UI                                                                  *)
 (* ------------------------------------------------------------------ *)
@@ -708,6 +738,7 @@ let router (state : App_state.t) =
           Dream.get "/wanted/:instance_id" (guard "GET /api/wanted" (get_wanted state));
           Dream.post "/rules/propose" (guard "POST /api/rules/propose" (propose_rules state));
           Dream.post "/rules/apply" (guard "POST /api/rules/apply" (apply_rules state));
+          Dream.post "/webhook/seerr" (guard "POST /api/webhook/seerr" (seerr_webhook state));
           Dream.post "/webhook/:instance_id" (guard "POST /api/webhook" (webhook state));
           Dream.get "/automatic/status"
             (guard "GET /api/automatic/status" (automatic_status state));

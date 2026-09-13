@@ -248,6 +248,34 @@ let tags ~base_url ~api_key () =
       | Error m -> Lwt.return (Error (Http.Json m))
       | Ok l -> ok (List.map R.tag_of_yojson l))
 
+(** [GET /api/v3/series?tvdbId=]  (lookup by TheTVDB id; used by the Seerr
+    webhook to map a request onto a library series) *)
+let series_by_tvdb_id ~base_url ~api_key tvdb_id =
+  let* r =
+    Http.get ~base_url ~api_key ~query:[ ("tvdbId", string_of_int tvdb_id) ] "/api/v3/series"
+  in
+  match r with
+  | Error e -> Lwt.return (Error e)
+  | Ok j -> (
+      match J.as_list "series" j with
+      | Error m -> Lwt.return (Error (Http.Json m))
+      | Ok l -> ok (List.map series_resource_of_yojson l))
+
+(** [GET /api/v3/episode?seriesId=&seasonNumber=]  (all episodes of one
+    season, or of the whole series when [season] is [None]) *)
+let episodes_of_series ~base_url ~api_key ?season series_id =
+  let query =
+    ("seriesId", string_of_int series_id)
+    :: (match season with Some n -> [ ("seasonNumber", string_of_int n) ] | None -> [])
+  in
+  let* r = Http.get ~base_url ~api_key ~query "/api/v3/episode" in
+  match r with
+  | Error e -> Lwt.return (Error e)
+  | Ok j -> (
+      match J.as_list "episodes" j with
+      | Error m -> Lwt.return (Error (Http.Json m))
+      | Ok l -> ok (List.map episode_resource_of_yojson l))
+
 (** [GET /api/v3/qualityprofile/{id}] *)
 let quality_profile ~base_url ~api_key id =
   let* r = Http.get ~base_url ~api_key (Printf.sprintf "/api/v3/qualityprofile/%d" id) in

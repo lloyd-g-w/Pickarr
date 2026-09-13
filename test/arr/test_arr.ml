@@ -373,6 +373,48 @@ let test_lenient_decoding () =
   bool_ "defaults to not rejected" false r.T.arr_rejected;
   opt_string "source still parsed from the title" (Some "WEB-DL") r.T.source
 
+
+let test_seerr_webhook () =
+  let open Pickarr_arr.Client in
+  let payload =
+    Yojson.Safe.from_string
+      {|{"notification_type":"MEDIA_AUTO_APPROVED","event":"TV Request Automatically Approved",
+         "subject":"Some Show (2019)","message":"...","image":"",
+         "media":{"media_type":"tv","tmdbId":"1396","tvdbId":"81189","imdbId":"","status":"PROCESSING","status4k":"UNKNOWN"},
+         "request":{"request_id":"12","requestedBy_email":"a@b.c","requestedBy_username":"alice"},
+         "extra":[{"name":"Requested Seasons","value":"1, 2"}]}|}
+  in
+  (match parse_seerr_webhook payload with
+  | Error e -> Alcotest.fail e
+  | Ok ev ->
+      Alcotest.(check string) "type" "MEDIA_AUTO_APPROVED" ev.seerr_notification_type;
+      Alcotest.(check (option string)) "media type" (Some "tv") ev.seerr_media_type;
+      Alcotest.(check (option int)) "tmdb (string in payload)" (Some 1396) ev.seerr_tmdb_id;
+      Alcotest.(check (option int)) "tvdb" (Some 81189) ev.seerr_tvdb_id;
+      Alcotest.(check (list int)) "seasons" [ 1; 2 ] ev.seerr_seasons;
+      Alcotest.(check (option string)) "subject" (Some "Some Show (2019)") ev.seerr_subject);
+  (* Movie with numeric ids and no extra; media null for a test notification. *)
+  (match
+     parse_seerr_webhook
+       (Yojson.Safe.from_string
+          {|{"notification_type":"MEDIA_APPROVED","subject":"Film","media":{"media_type":"movie","tmdbId":603,"tvdbId":""}}|})
+   with
+  | Error e -> Alcotest.fail e
+  | Ok ev ->
+      Alcotest.(check (option int)) "tmdb numeric" (Some 603) ev.seerr_tmdb_id;
+      Alcotest.(check (option int)) "tvdb empty" None ev.seerr_tvdb_id;
+      Alcotest.(check (list int)) "no seasons" [] ev.seerr_seasons);
+  (match
+     parse_seerr_webhook
+       (Yojson.Safe.from_string {|{"notification_type":"TEST_NOTIFICATION","media":null,"extra":[]}|})
+   with
+  | Error e -> Alcotest.fail e
+  | Ok ev ->
+      Alcotest.(check (option string)) "no media" None ev.seerr_media_type;
+      Alcotest.(check string) "test" "TEST_NOTIFICATION" ev.seerr_notification_type);
+  Alcotest.(check bool) "missing type is an error" true
+    (Result.is_error (parse_seerr_webhook (`Assoc [ ("subject", `String "x") ])))
+
 let tests =
   [
     ("sonarr release mapping", `Quick, test_sonarr_release_mapping);
@@ -385,6 +427,7 @@ let tests =
     ("grab bodies", `Quick, test_grab_bodies);
     ("grab identity guards", `Quick, test_grab_identity_guards);
     ("webhooks", `Quick, test_webhooks);
+    ("seerr webhook", `Quick, test_seerr_webhook);
     ("http join", `Quick, test_http_join);
     ("http error bodies", `Quick, test_http_error_bodies);
     ("lenient decoding", `Quick, test_lenient_decoding);

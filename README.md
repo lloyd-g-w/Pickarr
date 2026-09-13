@@ -95,6 +95,26 @@ http://pickarr:8484/api/webhook/<instance_id>?apikey=<your-api-key>
 the key from *Security* — the query parameter is needed because the *arr
 webhook UI cannot send headers.
 
+### Seerr / Overseerr / Jellyseerr
+
+If requests come in through Seerr, point its webhook notification agent
+(Settings → Notifications → Webhook) at Pickarr so an approved request is
+selected within seconds instead of on the next poll:
+
+```text
+Webhook URL:          http://pickarr:8484/api/webhook/seerr
+Authorization Header: <your-api-key>          (or use ?apikey=<key> in the URL)
+JSON Payload:         leave the default template
+Notification types:   Request Approved, Request Automatically Approved
+```
+
+Pickarr reads `media.media_type`, `media.tmdbId` / `media.tvdbId` and the
+"Requested Seasons" extra, waits for Sonarr/Radarr to finish adding the item
+(retrying for a few minutes), then runs a selection for the monitored, missing
+movie or episodes and grabs when *Actually grab* is on. Pickarr still searches
+and grabs through Sonarr/Radarr; Seerr is only a trigger. Requests for media
+that already has a file are ignored.
+
 ## Features
 
 * **Works with both** Sonarr (v4) and Radarr (v5), multiple instances of each.
@@ -296,6 +316,7 @@ LLM fails, and 500 for anything unexpected.
 | GET | `/api/automatic/status` | Scheduler status and last pass |
 | POST | `/api/automatic/run` | Run a scheduler pass now |
 | POST | `/api/webhook/:instance_id` | Sonarr/Radarr webhook receiver |
+| POST | `/api/webhook/seerr` | Seerr / Overseerr / Jellyseerr webhook receiver (default payload) |
 
 Requests below assume no authentication; add `-H 'X-Api-Key: <key>'` when an
 API key is configured.

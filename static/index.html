@@ -244,7 +244,9 @@
         <p class="hint">
           Send it as <code>X-Api-Key</code>, or as <code>?apikey=</code> in a URL.
           Sonarr/Radarr webhooks need the query form:
-          <code id="webhook-example">http://pickarr:8484/api/webhook/&lt;instance_id&gt;?apikey=&lt;key&gt;</code>
+          <code id="webhook-example">http://pickarr:8484/api/webhook/&lt;instance_id&gt;?apikey=&lt;key&gt;</code><br>
+          Seerr / Overseerr / Jellyseerr: webhook URL <code>http://pickarr:8484/api/webhook/seerr</code>
+          with the API key as the <em>Authorization Header</em> (default JSON payload).
         </p>
         <div class="row">
           <label>

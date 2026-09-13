@@ -178,6 +178,19 @@ let movie ~base_url ~api_key id =
   let* r = Http.get ~base_url ~api_key (Printf.sprintf "/api/v3/movie/%d" id) in
   Lwt.return (map_result movie_resource_of_yojson r)
 
+(** [GET /api/v3/movie?tmdbId=]  (lookup by TMDB id; used by the Seerr
+    webhook to map a request onto a library movie) *)
+let movies_by_tmdb_id ~base_url ~api_key tmdb_id =
+  let* r =
+    Http.get ~base_url ~api_key ~query:[ ("tmdbId", string_of_int tmdb_id) ] "/api/v3/movie"
+  in
+  match r with
+  | Error e -> Lwt.return (Error e)
+  | Ok j -> (
+      match J.as_list "movies" j with
+      | Error m -> Lwt.return (Error (Http.Json m))
+      | Ok l -> ok (List.map movie_resource_of_yojson l))
+
 (** [GET /api/v3/tag] *)
 let tags ~base_url ~api_key () =
   let* r = Http.get ~base_url ~api_key "/api/v3/tag" in

@@ -6,7 +6,9 @@
 #
 # Pickarr only talks to Sonarr and Radarr over their HTTP APIs. Sonarr and
 # Radarr keep owning indexers (through Prowlarr), the download client
-# (qBittorrent) and importing.
+# (qBittorrent) and importing. Seerr is optional: point its webhook at
+# http://pickarr:8484/api/webhook/seerr to have approved requests selected
+# immediately.
 #
 # Copy to docker-compose.yml, fill in the API keys, then:
 #   docker compose up -d
@@ -130,6 +132,22 @@ services:
       - "8080:8080"
       - "6881:6881"
       - "6881:6881/udp"
+
+  # Optional request front-end. After it starts, add a Webhook notification
+  # (Settings -> Notifications -> Webhook) with URL
+  # http://pickarr:8484/api/webhook/seerr, the Pickarr API key as the
+  # Authorization Header, and the "Request Approved" / "Request Automatically
+  # Approved" notification types enabled.
+  seerr:
+    image: ghcr.io/seerr-team/seerr:latest
+    container_name: seerr
+    restart: unless-stopped
+    environment:
+      TZ: Etc/UTC
+    volumes:
+      - ./config/seerr:/app/config
+    ports:
+      - "5055:5055"
 
 networks:
   default:

@@ -415,6 +415,43 @@ let test_webhook_action () =
     (`Ignored "webhook triggers are disabled")
     (Automatic.webhook_action ~trigger_enabled:false ~event:"MovieAdded" ~media_ids:[ 1 ])
 
+
+let seerr_action_t =
+  Alcotest.testable
+    (fun fmt a ->
+      Format.pp_print_string fmt
+        (match a with
+        | `Test -> "test"
+        | `Ignored why -> "ignored:" ^ why
+        | `Resolve app -> "resolve:" ^ Pickarr_core.Types.app_to_string app))
+    ( = )
+
+let test_seerr_action () =
+  let ev ?(nt = "MEDIA_APPROVED") ?media_type ?tmdb ?tvdb () =
+    {
+      Pickarr_arr.Client.seerr_notification_type = nt;
+      seerr_media_type = media_type;
+      seerr_tmdb_id = tmdb;
+      seerr_tvdb_id = tvdb;
+      seerr_seasons = [];
+      seerr_subject = None;
+    }
+  in
+  Alcotest.check seerr_action_t "test" `Test
+    (Automatic.seerr_action ~trigger_enabled:true (ev ~nt:"TEST_NOTIFICATION" ()));
+  Alcotest.check seerr_action_t "movie -> radarr" (`Resolve Pickarr_core.Types.Radarr)
+    (Automatic.seerr_action ~trigger_enabled:true (ev ~media_type:"movie" ~tmdb:603 ()));
+  Alcotest.check seerr_action_t "tv -> sonarr" (`Resolve Pickarr_core.Types.Sonarr)
+    (Automatic.seerr_action ~trigger_enabled:true
+       (ev ~nt:"MEDIA_AUTO_APPROVED" ~media_type:"tv" ~tvdb:81189 ()));
+  Alcotest.check seerr_action_t "tv without tvdb" (`Ignored "tv request without a tvdbId")
+    (Automatic.seerr_action ~trigger_enabled:true (ev ~media_type:"tv" ~tmdb:1 ()));
+  Alcotest.check seerr_action_t "available is not actionable"
+    (`Ignored "event not actionable: MEDIA_AVAILABLE")
+    (Automatic.seerr_action ~trigger_enabled:true (ev ~nt:"MEDIA_AVAILABLE" ~media_type:"movie" ~tmdb:1 ()));
+  Alcotest.check seerr_action_t "disabled" (`Ignored "webhook triggers are disabled")
+    (Automatic.seerr_action ~trigger_enabled:false (ev ~media_type:"movie" ~tmdb:1 ()))
+
 (* ------------------------------------------------------------------ *)
 (* Config plumbing used by the routes                                  *)
 (* ------------------------------------------------------------------ *)
@@ -668,6 +705,7 @@ let () =
           Alcotest.test_case "should grab" `Quick test_should_grab;
           Alcotest.test_case "cooldown seconds" `Quick test_cooldown_seconds;
           Alcotest.test_case "webhook action" `Quick test_webhook_action;
+          Alcotest.test_case "seerr action" `Quick test_seerr_action;
         ] );
       ( "config",
         [ Alcotest.test_case "effective nl preferences" `Quick test_effective_nl_preferences ]

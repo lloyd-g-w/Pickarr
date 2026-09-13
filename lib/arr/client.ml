@@ -379,6 +379,16 @@ let parse_webhook = Mapping.parse_webhook
 
 let ok x = Lwt.return (Ok x)
 
+let series_id_by_tvdb_id t (tvdb_id : int) =
+  match app t with
+  | T.Radarr -> ok None
+  | T.Sonarr -> (
+      let* r = Sonarr.series_by_tvdb_id ~base_url:(base t) ~api_key:(key t) tvdb_id in
+      match r with
+      | Error e -> Lwt.return (Error e)
+      | Ok [] -> ok None
+      | Ok (series :: _) -> ok (Some series.Sonarr.sr_id))
+
 let resolve_external t ~(tmdb_id : int option) ~(tvdb_id : int option)
     ~(seasons : int list) =
   let base_url = base t and api_key = key t in

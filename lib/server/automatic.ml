@@ -122,8 +122,7 @@ let group_by_season (media : Types.media list) :
 let attempts_assoc (s : App_state.scheduler) =
   Hashtbl.fold (fun k v acc -> (k, v) :: acc) s.attempted []
 
-let record_attempt (s : App_state.scheduler) instance_id media_id =
-  Hashtbl.replace s.attempted (instance_id, media_id) (Unix.gettimeofday ())
+let record_attempt = App_state.record_attempt
 
 let forget_stale_attempts (s : App_state.scheduler) ~now ~cooldown =
   Hashtbl.iter
@@ -623,42 +622,32 @@ let seerr_resolve_and_select (state : App_state.t) (app : Types.app) (ev : Clien
   let instances =
     List.filter (fun (i : Config.instance) -> i.inst_enabled && i.inst_app = app) cfg.instances
   in
-  let select inst media_id =
-    record_attempt state.App_state.scheduler inst.Config.inst_id media_id;
-    Lwt.catch
-      (fun () ->
-        Lwt.map
-          (function
-            | Ok (_ : Types.selection_result) -> ()
-            | Error e -> Log_buffer.warnf "seerr: %s: %s" inst.Config.inst_name (Selection.error_to_string e))
-          (Selection.run ~grab_allowed:(should_grab a) state inst ~media_id
-             { Selection.grab = a.auto_grab; instruction = None; use_ai = None }))
-      (fun exn ->
-        Log_buffer.errorf "seerr: selection failed: %s" (Printexc.to_string exn);
-        Lwt.return_unit)
-  in
+  let opts = { Selection.grab = a.auto_grab; instruction = None; use_ai = None } in
   let rec attempt n =
     let* () = Lwt_unix.sleep (if n = 1 then seerr_initial_delay else seerr_retry_delay) in
     let* found =
       Lwt_list.map_s
         (fun inst ->
-          let client = App_state.client state inst in
-          let* r =
-            Client.resolve_external client ~tmdb_id:ev.Client.seerr_tmdb_id
-              ~tvdb_id:ev.Client.seerr_tvdb_id ~seasons:ev.Client.seerr_seasons
+          let* target =
+            Fulfil.resolve state inst ~log:"seerr" ~tmdb_id:ev.Client.seerr_tmdb_id
+              ~tvdb_id:ev.Client.seerr_tvdb_id ~seasons:ev.Client.seerr_seasons ()
           in
-          match r with
-          | Error e ->
-              Log_buffer.warnf "seerr: %s: lookup failed: %s" inst.Config.inst_name
-                (Client.error_to_string e);
-              Lwt.return (inst, [])
-          | Ok ids -> Lwt.return (inst, ids))
+          Lwt.return (inst, target))
         instances
     in
-    let total = List.fold_left (fun acc (_, ids) -> acc + List.length ids) 0 found in
+    let total =
+      List.fold_left (fun acc (_, target) -> acc + Fulfil.target_items target) 0 found
+    in
     if total > 0 then (
       Log_buffer.infof "seerr: \"%s\" resolved to %d item(s); running selection" label total;
-      Lwt_list.iter_s (fun (inst, ids) -> Lwt_list.iter_s (select inst) ids) found)
+      Lwt_list.iter_s
+        (fun (inst, target) ->
+          if Fulfil.target_items target = 0 then Lwt.return_unit
+          else
+            Lwt.map
+              (fun (_ : Fulfil.outcome) -> ())
+              (Fulfil.run state inst ~log:"seerr" ~grab_allowed:(should_grab a) target opts))
+        found)
     else if n < seerr_max_attempts then (
       Log_buffer.infof "seerr: \"%s\" not in %s yet (attempt %d/%d); retrying" label
         (Types.app_to_string app) n seerr_max_attempts;

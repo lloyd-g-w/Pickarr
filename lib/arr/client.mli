@@ -106,6 +106,12 @@ val parse_webhook :
     (["Grab"], ["Download"], ["Test"], ["SeriesAdd"], ["MovieAdded"], ...)
     and the affected media ids. *)
 
+val series_id_by_tvdb_id : t -> int -> (int option, error) result Lwt.t
+(** The Sonarr series id for a TheTVDB id ([GET /api/v3/series?tvdbId=]), or
+    [None] when the series is not in the library yet.  A Radarr instance
+    always answers [Ok None].  Used to turn a Seerr TV request into a
+    season-pack selection. *)
+
 val resolve_external :
   t -> tmdb_id:int option -> tvdb_id:int option -> seasons:int list -> (int list, error) result Lwt.t
 (** Map external ids onto this instance's media ids.  Radarr: the monitored,

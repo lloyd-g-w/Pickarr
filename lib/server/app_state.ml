@@ -87,6 +87,13 @@ let prune_clients t =
     (fun id _ -> if not (List.mem id live) then Hashtbl.remove t.clients id)
     (Hashtbl.copy t.clients)
 
+(** Remember that [media_id] was just attempted on [instance_id], so the
+    cooldown in {!Automatic.plan} skips it on the next pass.  Lives here
+    because both the scheduler and the request-fulfilment path record
+    attempts. *)
+let record_attempt (s : scheduler) instance_id media_id =
+  Hashtbl.replace s.attempted (instance_id, media_id) (Unix.gettimeofday ())
+
 let find_instance t id = Config.find_instance (config t) id
 let default_instance t app = Config.default_instance (config t) app
 let uptime_seconds t = Unix.gettimeofday () -. t.started_at

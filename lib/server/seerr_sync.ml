@@ -259,83 +259,32 @@ let grab_policy (cfg : Config.t) =
 let selection_options (cfg : Config.t) =
   { Selection.grab = cfg.seerr.seerr_grab; instruction = None; use_ai = None }
 
-(** Run the pipeline for one resolved media id and describe the outcome. *)
-let select_one (state : App_state.t) (cfg : Config.t) (inst : Config.instance)
-    ~(media_id : int) : Yojson.Safe.t Lwt.t =
-  Automatic.record_attempt state.App_state.scheduler inst.Config.inst_id media_id;
-  Lwt.catch
-    (fun () ->
-      let* result =
-        Selection.run ~grab_allowed:(grab_policy cfg) state inst ~media_id
-          (selection_options cfg)
-      in
-      match result with
-      | Ok r ->
-          (match r.selected with
-          | None ->
-              Log_buffer.infof "seerr: %s: no usable release for %s" inst.inst_name
-                (Store.media_label r.media)
-          | Some s ->
-              Log_buffer.infof "seerr: %s: %s %s for %s" inst.inst_name
-                (if r.grabbed then "grabbed" else "would grab")
-                s.scored.title (Store.media_label r.media));
-          Lwt.return (Automatic.summary_of_result ~instance:inst r)
-      | Error e ->
-          let msg = Selection.error_to_string e in
-          Log_buffer.warnf "seerr: %s: %s" inst.inst_name msg;
-          Lwt.return (Automatic.summary_of_error ~instance:inst msg))
-    (fun exn ->
-      let msg = Printexc.to_string exn in
-      Log_buffer.errorf "seerr: selection failed: %s" msg;
-      Lwt.return (Automatic.summary_of_error ~instance:inst msg))
-
-(** Fulfil a movie request on one instance: one selection per resolved Radarr
-    movie id (normally exactly one). *)
-let fulfil_movie (state : App_state.t) (cfg : Config.t) (inst : Config.instance)
-    ~(movie_ids : int list) : Yojson.Safe.t list Lwt.t =
-  Lwt_list.map_s (fun media_id -> select_one state cfg inst ~media_id) movie_ids
-
-(** Fulfil a TV request on one instance.
-
-    TODO(integration): switch to Selection.run_series ~series_id ?seasons once
-    the season-pack selection lands, so a season request can be satisfied by a
-    single season pack instead of one grab per episode. This function is the
-    only place that decides how a TV request is turned into selections. *)
-let fulfil_tv (state : App_state.t) (cfg : Config.t) (inst : Config.instance)
-    ~(episode_ids : int list) : Yojson.Safe.t list Lwt.t =
-  Lwt_list.map_s (fun media_id -> select_one state cfg inst ~media_id) episode_ids
-
-(** Resolve the *arr media ids for a request on one instance.
-
-    Normally [Client.resolve_external] finds them from the TMDB/TVDB id. When
-    Radarr does not know the TMDB id but Seerr already recorded the movie id
-    it pushed ([externalServiceId]), that id is used instead — still only if
-    the movie is monitored and has no file. *)
+(** Resolve what a request means on one instance: a movie, a set of seasons
+    of a series, or (as a fallback) individual episodes.  See
+    {!Fulfil.resolve}. *)
 let resolve_on_instance (state : App_state.t) (r : Seerr.request) (inst : Config.instance) :
-    int list Lwt.t =
-  let client = App_state.client state inst in
-  let* resolved =
-    Client.resolve_external client ~tmdb_id:r.rq_media.mi_tmdb_id
-      ~tvdb_id:r.rq_media.mi_tvdb_id ~seasons:(Seerr.season_numbers r)
+    Fulfil.target Lwt.t =
+  Fulfil.resolve state inst ~log:"seerr" ~tmdb_id:r.rq_media.mi_tmdb_id
+    ~tvdb_id:r.rq_media.mi_tvdb_id ~seasons:(Seerr.season_numbers r)
+    ?external_service_id:(Seerr.request_external_service_id r) ()
+
+(** Run a resolved target and turn it into the per-selection summaries the UI
+    shows, plus the per-season detail for a TV request. *)
+let fulfil_on_instance (state : App_state.t) (cfg : Config.t) (inst : Config.instance)
+    (target : Fulfil.target) : (Yojson.Safe.t list * Yojson.Safe.t list) Lwt.t =
+  let* outcome =
+    Fulfil.run state inst ~log:"seerr" ~grab_allowed:(grab_policy cfg) target
+      (selection_options cfg)
   in
-  match resolved with
-  | Error e ->
-      Log_buffer.warnf "seerr: %s: lookup failed: %s" inst.inst_name
-        (Client.error_to_string e);
-      Lwt.return []
-  | Ok (_ :: _ as ids) -> Lwt.return ids
-  | Ok [] -> (
-      match (inst.inst_app, Seerr.request_external_service_id r) with
-      | Types.Radarr, Some movie_id -> (
-          let* media = Client.fetch_media client movie_id in
-          match media with
-          | Ok m when m.monitored && not m.has_file ->
-              Log_buffer.infof
-                "seerr: %s: using the movie id %d Seerr recorded (Radarr did not match the TMDB id)"
-                inst.inst_name movie_id;
-              Lwt.return [ movie_id ]
-          | Ok _ | Error _ -> Lwt.return [])
-      | _ -> Lwt.return [])
+  let summaries =
+    List.map (fun r -> Automatic.summary_of_result ~instance:inst r) outcome.results
+  in
+  let summaries =
+    match outcome.error with
+    | None -> summaries
+    | Some msg -> summaries @ [ Automatic.summary_of_error ~instance:inst msg ]
+  in
+  Lwt.return (summaries, Fulfil.seasons_to_compact outcome)
 
 (** Delays before the 1st, 2nd and 3rd resolution attempt of a request within
     one pass. Seerr approves and pushes to the *arr asynchronously, so an item
@@ -369,11 +318,15 @@ let fulfil_request (state : App_state.t) (cfg : Config.t) ?(title : Seerr.title 
             let* found =
               Lwt_list.map_s
                 (fun inst ->
-                  let* ids = resolve_on_instance state r inst in
-                  Lwt.return (inst, ids))
+                  let* target = resolve_on_instance state r inst in
+                  Lwt.return (inst, target))
                 instances
             in
-            let total = List.fold_left (fun acc (_, ids) -> acc + List.length ids) 0 found in
+            let total =
+              List.fold_left
+                (fun acc (_, target) -> acc + Fulfil.target_items target)
+                0 found
+            in
             if total > 0 then Lwt.return (Some (found, total))
             else
               match delays with
@@ -403,22 +356,23 @@ let fulfil_request (state : App_state.t) (cfg : Config.t) ?(title : Seerr.title 
               Log_buffer.warnf "seerr: %s: %s" (label ?title r) msg;
               Lwt.return [ summary_of_skip ?title r msg ]
           | Some (found, total) ->
-              let* results =
+              let* per_instance =
                 Lwt_list.map_s
-                  (fun ((inst : Config.instance), ids) ->
-                    if ids = [] then Lwt.return []
+                  (fun ((inst : Config.instance), target) ->
+                    if Fulfil.target_items target = 0 then Lwt.return ([], [])
                     else (
-                      Log_buffer.infof "seerr: %s: fulfilling %s with %d item(s)"
-                        inst.inst_name (label ?title r) (List.length ids);
-                      match app with
-                      | Types.Radarr -> fulfil_movie state cfg inst ~movie_ids:ids
-                      | Types.Sonarr -> fulfil_tv state cfg inst ~episode_ids:ids))
+                      Log_buffer.infof "seerr: %s: fulfilling %s with %s" inst.inst_name
+                        (label ?title r) (Fulfil.target_to_string target);
+                      fulfil_on_instance state cfg inst target))
                   found
               in
+              let results = List.concat_map fst per_instance in
+              let seasons = List.concat_map snd per_instance in
               Lwt.return
                 (summary_of_request ?title r
-                   [ ("action", `String "fulfilled"); ("items", `Int total) ]
-                :: List.concat results)))
+                   ([ ("action", `String "fulfilled"); ("items", `Int total) ]
+                   @ if seasons = [] then [] else [ ("seasons", `List seasons) ])
+                :: results)))
 
 (* ------------------------------------------------------------------ *)
 (* Approval                                                            *)

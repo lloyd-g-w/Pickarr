@@ -9,6 +9,7 @@ module Automatic = Pickarr_server.Automatic
 module Auth = Pickarr_server.Auth
 module Seerr = Pickarr_arr.Seerr
 module Seerr_sync = Pickarr_server.Seerr_sync
+module Fulfil = Pickarr_server.Fulfil
 
 let temp_dir prefix =
   let dir =
@@ -713,6 +714,96 @@ let test_seerr_compact_request () =
   | _ -> Alcotest.fail "compact request must be an object"
 
 (* ------------------------------------------------------------------ *)
+(* Fulfilment: request -> target -> selections                          *)
+(* ------------------------------------------------------------------ *)
+
+let summary ~season ~total ~missing_ids : Pickarr_arr.Client.season_summary =
+  {
+    season_number = season;
+    monitored = true;
+    total_episodes = total;
+    missing_episode_ids = missing_ids;
+    existing_quality = None;
+  }
+
+let test_fulfil_seasons_with_missing () =
+  let summaries =
+    [
+      summary ~season:1 ~total:10 ~missing_ids:[];
+      summary ~season:2 ~total:10 ~missing_ids:[ 201; 202 ];
+      summary ~season:3 ~total:8 ~missing_ids:[ 301 ];
+    ]
+  in
+  Alcotest.(check (list int))
+    "only the seasons that miss something" [ 2; 3 ]
+    (Fulfil.seasons_with_missing ~requested:[] summaries);
+  Alcotest.(check (list int))
+    "restricted to the requested seasons" [ 2 ]
+    (Fulfil.seasons_with_missing ~requested:[ 1; 2 ] summaries);
+  Alcotest.(check (list int))
+    "a complete season is not requested again" []
+    (Fulfil.seasons_with_missing ~requested:[ 1 ] summaries);
+  Alcotest.(check (list int))
+    "an unknown season number yields nothing" []
+    (Fulfil.seasons_with_missing ~requested:[ 9 ] summaries)
+
+let test_fulfil_target_items () =
+  Alcotest.(check int) "movies" 2 (Fulfil.target_items (Fulfil.Movies [ 1; 2 ]));
+  Alcotest.(check int)
+    "one unit of work per season" 2
+    (Fulfil.target_items (Fulfil.Series { series_id = 12; seasons = [ 2; 3 ] }));
+  Alcotest.(check int) "episodes" 3 (Fulfil.target_items (Fulfil.Episodes [ 1; 2; 3 ]));
+  Alcotest.(check int) "nothing" 0 (Fulfil.target_items Fulfil.Nothing);
+  (* [Nothing] is what makes a caller retry, so it must never count. *)
+  Alcotest.(check string)
+    "series description" "series 12, season(s) 2, 3"
+    (Fulfil.target_to_string (Fulfil.Series { series_id = 12; seasons = [ 2; 3 ] }))
+
+let test_fulfil_seasons_to_compact () =
+  let outcome : Fulfil.outcome =
+    {
+      results = [];
+      series = None;
+      error = None;
+      seasons =
+        [
+          {
+            Selection.season_number = 2;
+            missing = 10;
+            total = 10;
+            outcome = `Pack (result_of ~grabbed:true ());
+          };
+          {
+            Selection.season_number = 3;
+            missing = 1;
+            total = 10;
+            outcome = `Episodes [ result_of ~grabbed:true (); result_of () ];
+          };
+          { Selection.season_number = 4; missing = 0; total = 10; outcome = `Skipped "nothing missing" };
+        ];
+    }
+  in
+  match Fulfil.seasons_to_compact outcome with
+  | [ `Assoc pack; `Assoc episodes; `Assoc skipped ] ->
+      Alcotest.(check bool) "pack kind" true (List.assoc_opt "kind" pack = Some (`String "pack"));
+      Alcotest.(check bool) "pack season" true (List.assoc_opt "season_number" pack = Some (`Int 2));
+      Alcotest.(check bool) "pack grabbed" true (List.assoc_opt "grabbed" pack = Some (`Bool true));
+      Alcotest.(check bool) "pack names the release" true
+        (List.assoc_opt "selected" pack
+        = Some (`String "Some.Movie.2026.1080p.WEB-DL.x265-FLUX"));
+      Alcotest.(check bool) "episodes kind" true
+        (List.assoc_opt "kind" episodes = Some (`String "episodes"));
+      Alcotest.(check bool) "episode count" true
+        (List.assoc_opt "episodes" episodes = Some (`Int 2));
+      Alcotest.(check bool) "grabbed episodes are counted" true
+        (List.assoc_opt "grabbed" episodes = Some (`Int 1));
+      Alcotest.(check bool) "skipped kind" true
+        (List.assoc_opt "kind" skipped = Some (`String "skipped"));
+      Alcotest.(check bool) "skip reason" true
+        (List.assoc_opt "reason" skipped = Some (`String "nothing missing"))
+  | other -> Alcotest.failf "expected three seasons, got %d" (List.length other)
+
+(* ------------------------------------------------------------------ *)
 (* Config plumbing used by the routes                                  *)
 (* ------------------------------------------------------------------ *)
 
@@ -982,6 +1073,13 @@ let () =
           Alcotest.test_case "plan" `Quick test_seerr_plan;
           Alcotest.test_case "configuration gate" `Quick test_seerr_configured;
           Alcotest.test_case "compact request" `Quick test_seerr_compact_request;
+        ] );
+      ( "fulfil",
+        [
+          Alcotest.test_case "seasons with missing episodes" `Quick
+            test_fulfil_seasons_with_missing;
+          Alcotest.test_case "target items" `Quick test_fulfil_target_items;
+          Alcotest.test_case "compact seasons" `Quick test_fulfil_seasons_to_compact;
         ] );
       ( "config",
         [ Alcotest.test_case "effective nl preferences" `Quick test_effective_nl_preferences ]

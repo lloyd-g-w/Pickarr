@@ -35,7 +35,16 @@ val is_remux : Types.release -> bool
 
 (** [check rules release] returns every hard rule the release violates.  An
     empty list means the release is a valid candidate.  All applicable
-    reasons are returned, not just the first one. *)
+    reasons are returned, not just the first one.
+
+    Notes on individual rules:
+    - [min_seeders] only applies to torrents, and an unknown seeder count
+      cannot be checked and therefore passes.
+    - [allowed_codecs]/[allowed_resolutions] only reject releases whose codec
+      or resolution is known; an undetectable codec is rejected only when
+      [reject_unknown_codec] is set.
+    - a hard rejection from Sonarr/Radarr always rejects; a temporary *arr
+      rejection only rejects when [respect_arr_rejections] is set. *)
 val check : Config.hard_rules -> Types.release -> Types.rejection list
 
 (** [partition rules releases] splits [releases] into the candidates that

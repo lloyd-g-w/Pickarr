@@ -518,13 +518,15 @@ function selectPageContext() {
   };
 }
 
-async function runSelection(grab) {
+/* Search (and optionally grab) one movie or episode. The media id comes from
+   the picked library item, a picked episode or a wanted row — never from a
+   field the user has to fill in by hand. */
+async function runSelection(grab, mediaId) {
   const instanceId = $("#select-instance").value;
-  const mediaId = parseInt($("#select-media-id").value, 10);
   if (!instanceId)
     return toast("No enabled instance: add one on the Instances tab first", true);
   if (!Number.isInteger(mediaId) || mediaId < 1)
-    return toast("Enter a media id (Radarr movie id, Sonarr episode id)", true);
+    return toast("Pick a movie or an episode first", true);
   const body = {
     grab: grab,
     use_ai: $("#select-use-ai").checked,
@@ -635,6 +637,7 @@ function renderSelectionResult(result, target, ctx) {
         ? ` S${String(media.season_number).padStart(2, "0")}E${String(media.episode_number).padStart(2, "0")}`
         : "",
       el("div", { class: "hint" }, `${result.candidates.length} candidate(s), ${result.rejected.length} rejected`),
+      el("div", {}, ...openInLinks(media.links, media.app)),
       el(
         "div",
         {},
@@ -807,34 +810,20 @@ function renderSelectionResult(result, target, ctx) {
 }
 
 /* ------------------------------------------------------------------ */
-/* seasons and whole series (Sonarr)                                   */
+/* library browsing: find an item, pick it, then search it             */
 /* ------------------------------------------------------------------ */
+
+/* What the Search / Grab buttons act on. One of:
+     {kind:"movie",   mediaId}
+     {kind:"episode", mediaId, label}
+     {kind:"season",  seriesId, seasonNumber}
+     {kind:"series",  seriesId, seasons:[n]}   (seasons empty = all)  */
+let picked = null;
 
 function selectedInstance() {
   const id = $("#select-instance").value;
   const instances = (state.config && state.config.instances) || [];
   return instances.find((i) => i.id === id) || null;
-}
-
-function selectMode() {
-  return $("#select-what").value;
-}
-
-/* Seasons only exist in Sonarr, so the extra modes are disabled for a
-   Radarr instance. */
-function updateSelectMode() {
-  const instance = selectedInstance();
-  const isSonarr = !instance || instance.app === "sonarr";
-  for (const option of $("#select-what").options) {
-    if (option.value !== "media") option.disabled = !isSonarr;
-  }
-  if (!isSonarr && selectMode() !== "media") $("#select-what").value = "media";
-
-  const mode = selectMode();
-  $("#select-media-row").hidden = mode !== "media";
-  $("#select-series-block").hidden = mode === "media";
-  $("#select-season-label").hidden = mode !== "season";
-  $("#select-seasons-label").hidden = mode !== "series";
 }
 
 function selectionBody(grab) {
@@ -844,70 +833,309 @@ function selectionBody(grab) {
   return body;
 }
 
-function parsedSeasonList() {
-  return $("#select-seasons")
-    .value.split(",")
-    .map((s) => parseInt(s.trim(), 10))
-    .filter((n) => !Number.isNaN(n));
+/* "Open in Sonarr" / "Open in Seerr" for anything that carries a links
+   object. Returns an empty array when nothing is linkable, so callers can
+   splat it straight into el(). */
+function openInLinks(links, app) {
+  if (!links) return [];
+  const out = [];
+  const arrName = app === "radarr" ? "Radarr" : app === "sonarr" ? "Sonarr" : "the *arr";
+  if (links.arr)
+    out.push(
+      el(
+        "a",
+        { class: "linkbtn", href: links.arr, target: "_blank", rel: "noreferrer noopener" },
+        `Open in ${arrName}`
+      )
+    );
+  if (links.seerr)
+    out.push(
+      el(
+        "a",
+        { class: "linkbtn", href: links.seerr, target: "_blank", rel: "noreferrer noopener" },
+        "Open in Seerr"
+      )
+    );
+  return out;
 }
 
-async function loadSeasons() {
-  const instanceId = $("#select-instance").value;
-  const seriesId = parseInt($("#select-series-id").value, 10);
-  if (!instanceId) return toast("Configure an instance first", true);
-  if (!seriesId || seriesId < 1) return toast("Enter a series id", true);
-  const container = $("#seasons-list");
-  setResult("#seasons-status", "loading…", true);
-  container.replaceChildren();
-  try {
-    const data = await api(`/api/series/${encodeURIComponent(instanceId)}/${seriesId}`);
-    setResult("#seasons-status", "", true);
-    renderSeasons(data);
-  } catch (e) {
-    setResult("#seasons-status", e.message, false);
-    toast(e.message, true);
+function describePicked() {
+  if (!picked) return "nothing picked yet";
+  switch (picked.kind) {
+    case "movie":
+      return `picked: ${picked.label}`;
+    case "episode":
+      return `picked: ${picked.label}`;
+    case "season":
+      return `picked: ${picked.label}`;
+    case "series":
+      return picked.seasons && picked.seasons.length
+        ? `picked: ${picked.label}, season(s) ${picked.seasons.join(", ")}`
+        : `picked: ${picked.label}, all seasons`;
+    default:
+      return "nothing picked yet";
   }
 }
 
-function renderSeasons(data) {
-  const container = $("#seasons-list");
-  const series = data.series || {};
-  const seasons = data.seasons || [];
-  if (!seasons.length) {
-    container.replaceChildren(el("p", { class: "hint" }, "This series has no seasons."));
+function setPicked(next) {
+  picked = next;
+  const target = $("#select-target");
+  if (target) target.textContent = describePicked();
+}
+
+async function searchLibrary() {
+  const instanceId = $("#select-instance").value;
+  if (!instanceId)
+    return toast("No enabled instance: add one on the Instances tab first", true);
+  const q = $("#library-q").value.trim();
+  setResult("#library-status", "searching your library…", true);
+  $("#library-results").replaceChildren();
+  try {
+    const data = await api(
+      `/api/library/${encodeURIComponent(instanceId)}/search?q=${encodeURIComponent(q)}`
+    );
+    const found = (data.results || []).length;
+    setResult(
+      "#library-status",
+      found
+        ? `${found}${data.truncated ? "+" : ""} of ${data.total} item(s)`
+        : `nothing in this library matches "${q}"`,
+      found > 0
+    );
+    renderLibraryResults(data);
+  } catch (e) {
+    setResult("#library-status", describeApiError(e), false);
+    toast(describeApiError(e), true);
+  }
+}
+
+function libraryItemSummary(item) {
+  if (item.kind === "movie")
+    return item.has_file ? "on disk" : item.monitored ? "missing" : "not monitored";
+  const seasons = item.season_count === null ? "?" : item.season_count;
+  const missing = item.missing_count === null ? "?" : item.missing_count;
+  return `${seasons} season(s), ${missing} episode(s) missing`;
+}
+
+function renderLibraryResults(data) {
+  const container = $("#library-results");
+  const items = data.results || [];
+  if (!items.length) {
+    container.replaceChildren();
     return;
   }
   container.replaceChildren(
-    el(
-      "div",
-      { class: "panel" },
-      el("strong", {}, series.title || "unknown"),
-      series.year ? ` (${series.year})` : "",
-      el(
-        "div",
-        { class: "hint" },
-        `${data.missing_episodes ?? "?"} of ${data.total_episodes ?? "?"} episode(s) missing`
-      )
-    ),
     el(
       "table",
       {},
       el(
         "thead",
         {},
-        el("tr", {}, ["Season", "Missing", "On disk", "Monitored", ""].map((h) => el("th", {}, h)))
+        el("tr", {}, ["Title", "Kind", "Status", "Links", ""].map((h) => el("th", {}, h)))
       ),
       el(
         "tbody",
         {},
-        ...seasons.map((s) =>
+        ...items.map((item) =>
           el(
             "tr",
             {},
-            el("td", {}, s.season_number === 0 ? "Specials" : `Season ${s.season_number}`),
-            el("td", {}, `${s.missing_episodes} / ${s.total_episodes}`),
-            el("td", {}, s.existing_quality || "—"),
-            el("td", {}, s.monitored ? "yes" : "no"),
+            el("td", {}, item.title + (item.year ? ` (${item.year})` : "")),
+            el("td", {}, item.kind),
+            el("td", {}, libraryItemSummary(item)),
+            el("td", {}, ...openInLinks(item.links, data.app)),
+            el(
+              "td",
+              {},
+              el(
+                "button",
+                { class: "small primary", onclick: () => pickLibraryItem(data, item) },
+                "Pick"
+              )
+            )
+          )
+        )
+      )
+    )
+  );
+}
+
+/* Picking loads the detail the buttons need: a movie card, or the season
+   table of a series. */
+async function pickLibraryItem(data, item) {
+  const instanceId = data.instance_id;
+  const container = $("#library-picked");
+  container.replaceChildren(el("p", { class: "hint" }, "Loading…"));
+  $("#select-result").replaceChildren();
+  setResult("#select-status", "", true);
+  try {
+    if (item.kind === "movie") {
+      const detail = await api(
+        `/api/library/${encodeURIComponent(instanceId)}/movie/${item.id}`
+      );
+      renderPickedMovie(instanceId, detail, item);
+    } else {
+      const detail = await api(
+        `/api/library/${encodeURIComponent(instanceId)}/series/${item.id}`
+      );
+      renderPickedSeries(instanceId, detail, item);
+    }
+  } catch (e) {
+    container.replaceChildren(el("p", { class: "result bad" }, describeApiError(e)));
+    toast(describeApiError(e), true);
+  }
+}
+
+function renderPickedMovie(instanceId, detail, item) {
+  const movie = detail.movie || {};
+  const label = movie.title + (movie.year ? ` (${movie.year})` : "");
+  setPicked({ kind: "movie", instanceId, mediaId: movie.media_id, label });
+  $("#library-picked").replaceChildren(
+    el(
+      "div",
+      { class: "panel picked" },
+      el("strong", {}, label),
+      el(
+        "div",
+        { class: "hint" },
+        movie.has_file
+          ? `on disk${movie.existing_quality ? ` (${movie.existing_quality})` : ""}`
+          : "no file yet",
+        movie.monitored ? "" : " · not monitored"
+      ),
+      el("div", {}, ...openInLinks(movie.links, "radarr")),
+      el(
+        "div",
+        {},
+        el(
+          "button",
+          { class: "small", onclick: () => runSelection(false, movie.media_id) },
+          "Search"
+        ),
+        " ",
+        el(
+          "button",
+          {
+            class: "small primary",
+            onclick: () => {
+              if (confirm(`Search and grab the best release for ${label}?`))
+                runSelection(true, movie.media_id);
+            },
+          },
+          "Grab"
+        )
+      )
+    )
+  );
+}
+
+/* One season row: a checkbox for "search selected seasons", the per-season
+   pack buttons, and an expander that loads the episodes on demand. */
+function seasonRow(instanceId, seriesId, seriesLabel, s) {
+  const label = s.season_number === 0 ? "Specials" : `Season ${s.season_number}`;
+  const checkbox = el("input", { type: "checkbox", value: String(s.season_number) });
+  checkbox.className = "season-pick";
+  const episodes = el("div", {});
+  const expander = el(
+    "details",
+    {},
+    el("summary", {}, "Episodes"),
+    episodes
+  );
+  expander.addEventListener("toggle", async () => {
+    if (!expander.open || expander.dataset.loaded) return;
+    expander.dataset.loaded = "1";
+    episodes.replaceChildren(el("p", { class: "hint" }, "Loading…"));
+    try {
+      const data = await api(
+        `/api/library/${encodeURIComponent(instanceId)}/series/${seriesId}/season/${s.season_number}`
+      );
+      renderSeasonEpisodes(episodes, instanceId, seriesId, seriesLabel, data);
+    } catch (e) {
+      expander.dataset.loaded = "";
+      episodes.replaceChildren(el("p", { class: "result bad" }, describeApiError(e)));
+    }
+  });
+  const pickSeason = () =>
+    setPicked({
+      kind: "season",
+      instanceId,
+      seriesId,
+      seasonNumber: s.season_number,
+      label: `${seriesLabel} ${label}`,
+    });
+  return el(
+    "tr",
+    {},
+    el("td", {}, checkbox),
+    el("td", {}, label),
+    el("td", {}, `${s.missing_episodes} / ${s.total_episodes}`),
+    el("td", {}, s.existing_quality || "—"),
+    el("td", {}, s.monitored ? "yes" : "no"),
+    el(
+      "td",
+      {},
+      el(
+        "button",
+        {
+          class: "small",
+          title: "Search for a season pack",
+          onclick: () => {
+            pickSeason();
+            runSeasonSelection(false, seriesId, s.season_number);
+          },
+        },
+        "Search"
+      ),
+      " ",
+      el(
+        "button",
+        {
+          class: "small primary",
+          onclick: () => {
+            if (!confirm(`Search and grab the best pack for ${label} now?`)) return;
+            pickSeason();
+            runSeasonSelection(true, seriesId, s.season_number);
+          },
+        },
+        "Grab"
+      ),
+      expander
+    )
+  );
+}
+
+function renderSeasonEpisodes(container, instanceId, seriesId, seriesLabel, data) {
+  const episodes = data.episodes || [];
+  if (!episodes.length) {
+    container.replaceChildren(el("p", { class: "hint" }, "No episodes in this season."));
+    return;
+  }
+  container.replaceChildren(
+    el(
+      "table",
+      {},
+      el(
+        "thead",
+        {},
+        el("tr", {}, ["#", "Title", "Aired", "On disk", ""].map((h) => el("th", {}, h)))
+      ),
+      el(
+        "tbody",
+        {},
+        ...episodes.map((ep) => {
+          const label = `${seriesLabel} S${String(ep.season_number).padStart(2, "0")}E${String(
+            ep.episode_number
+          ).padStart(2, "0")}`;
+          const pick = () =>
+            setPicked({ kind: "episode", instanceId, mediaId: ep.id, label });
+          return el(
+            "tr",
+            {},
+            el("td", {}, ep.episode_number),
+            el("td", {}, ep.title || "—"),
+            el("td", {}, (ep.air_date || "—").slice(0, 10)),
+            el("td", {}, ep.has_file ? ep.existing_quality || "yes" : "no"),
             el(
               "td",
               {},
@@ -916,10 +1144,8 @@ function renderSeasons(data) {
                 {
                   class: "small",
                   onclick: () => {
-                    $("#select-what").value = "season";
-                    $("#select-season-number").value = s.season_number;
-                    updateSelectMode();
-                    runSeasonSelection(false);
+                    pick();
+                    runSelection(false, ep.id);
                   },
                 },
                 "Search"
@@ -930,31 +1156,129 @@ function renderSeasons(data) {
                 {
                   class: "small primary",
                   onclick: () => {
-                    if (!confirm(`Search and grab the best pack for season ${s.season_number} now?`))
-                      return;
-                    $("#select-what").value = "season";
-                    $("#select-season-number").value = s.season_number;
-                    updateSelectMode();
-                    runSeasonSelection(true);
+                    if (!confirm(`Search and grab the best release for ${label}?`)) return;
+                    pick();
+                    runSelection(true, ep.id);
                   },
                 },
                 "Grab"
               )
             )
+          );
+        })
+      )
+    )
+  );
+}
+
+/* The season checkboxes only exist while a series is picked; an empty list
+   means "the whole series". */
+function checkedSeasons() {
+  const panel = $("#library-picked");
+  if (!panel || !panel.querySelectorAll) return [];
+  return Array.from(panel.querySelectorAll("input.season-pick"))
+    .filter((box) => box.checked)
+    .map((box) => parseInt(box.value, 10))
+    .filter((n) => !Number.isNaN(n));
+}
+
+function renderPickedSeries(instanceId, detail, item) {
+  const series = detail.series || {};
+  const seasons = detail.seasons || [];
+  const label = series.title + (series.year ? ` (${series.year})` : "");
+  setPicked({ kind: "series", instanceId, seriesId: series.media_id, seasons: [], label });
+  const container = $("#library-picked");
+  if (!seasons.length) {
+    container.replaceChildren(
+      el(
+        "div",
+        { class: "panel picked" },
+        el("strong", {}, label),
+        el("div", {}, ...openInLinks(series.links, "sonarr")),
+        el("p", { class: "hint" }, "This series has no seasons Sonarr knows about.")
+      )
+    );
+    return;
+  }
+  const wholeSeries = (grab) => {
+    const chosen = checkedSeasons();
+    setPicked({
+      kind: "series",
+      instanceId,
+      seriesId: series.media_id,
+      seasons: chosen,
+      label,
+    });
+    runSeriesSelection(grab, series.media_id, chosen);
+  };
+  container.replaceChildren(
+    el(
+      "div",
+      { class: "panel picked" },
+      el("strong", {}, label),
+      el(
+        "div",
+        { class: "hint" },
+        `${detail.missing_episodes ?? "?"} of ${detail.total_episodes ?? "?"} episode(s) missing`
+      ),
+      el("div", {}, ...openInLinks(series.links, "sonarr")),
+      el(
+        "table",
+        {},
+        el(
+          "thead",
+          {},
+          el(
+            "tr",
+            {},
+            ["", "Season", "Missing", "On disk", "Monitored", ""].map((h) => el("th", {}, h))
           )
+        ),
+        el(
+          "tbody",
+          {},
+          ...seasons.map((s) => seasonRow(instanceId, series.media_id, series.title, s))
+        )
+      ),
+      el(
+        "div",
+        {},
+        el(
+          "button",
+          { class: "small", onclick: () => wholeSeries(false) },
+          "Search selected seasons"
+        ),
+        " ",
+        el(
+          "button",
+          {
+            class: "small primary",
+            onclick: () => {
+              const chosen = checkedSeasons();
+              const what = chosen.length ? `season(s) ${chosen.join(", ")}` : "every season";
+              if (!confirm(`Search and grab ${what} of ${label}?`)) return;
+              wholeSeries(true);
+            },
+          },
+          "Grab selected seasons"
+        ),
+        el(
+          "span",
+          { class: "hint-inline" },
+          " no season ticked = the whole series"
         )
       )
     )
   );
 }
 
-async function runSeasonSelection(grab) {
+/* Search (and optionally grab) a season pack. Called from a season row, so
+   the series id and season number are always known. */
+async function runSeasonSelection(grab, seriesId, season) {
   const instanceId = $("#select-instance").value;
-  const seriesId = parseInt($("#select-series-id").value, 10);
-  const season = parseInt($("#select-season-number").value, 10);
   if (!instanceId) return toast("Configure an instance first", true);
-  if (!seriesId || seriesId < 1) return toast("Enter a series id", true);
-  if (Number.isNaN(season) || season < 0) return toast("Enter a season number", true);
+  if (!seriesId || seriesId < 1) return toast("Pick a series first", true);
+  if (Number.isNaN(season) || season < 0) return toast("Pick a season first", true);
   setResult(
     "#select-status",
     grab ? "searching for a pack and grabbing…" : "searching for a pack…",
@@ -979,14 +1303,13 @@ async function runSeasonSelection(grab) {
   }
 }
 
-async function runSeriesSelection(grab) {
+/* Search (and optionally grab) a whole series, or just the ticked seasons. */
+async function runSeriesSelection(grab, seriesId, seasons) {
   const instanceId = $("#select-instance").value;
-  const seriesId = parseInt($("#select-series-id").value, 10);
   if (!instanceId) return toast("Configure an instance first", true);
-  if (!seriesId || seriesId < 1) return toast("Enter a series id", true);
+  if (!seriesId || seriesId < 1) return toast("Pick a series first", true);
   const body = selectionBody(grab);
-  const seasons = parsedSeasonList();
-  if (seasons.length) body.seasons = seasons;
+  if (seasons && seasons.length) body.seasons = seasons;
   setResult(
     "#select-status",
     grab ? "searching the whole series and grabbing…" : "searching the whole series…",
@@ -1025,7 +1348,8 @@ function renderSeriesResult(result, target, ctx) {
         { class: "hint" },
         `${summary.seasons || 0} season(s) considered · ${summary.selections || 0} search(es) · ` +
           `${summary.selected || 0} with a winner · ${summary.grabbed || 0} grabbed`
-      )
+      ),
+      el("div", {}, ...openInLinks(series.links, series.app))
     ),
   ];
 
@@ -1071,15 +1395,17 @@ function selectionLabel(selection) {
   return `${media.title || ""}${episode} — ${title}${selection.grabbed ? " (grabbed)" : ""}`;
 }
 
-/* The Search / Grab buttons act on whatever mode is selected. */
+/* The page's Search / Grab buttons act on whatever was picked last: a movie,
+   an episode, a season pack, or the series. */
 function runCurrentSelection(grab) {
-  switch (selectMode()) {
+  if (!picked) return toast("Search your library and pick an item first", true);
+  switch (picked.kind) {
     case "season":
-      return runSeasonSelection(grab);
+      return runSeasonSelection(grab, picked.seriesId, picked.seasonNumber);
     case "series":
-      return runSeriesSelection(grab);
+      return runSeriesSelection(grab, picked.seriesId, checkedSeasons());
     default:
-      return runSelection(grab);
+      return runSelection(grab, picked.mediaId);
   }
 }
 
@@ -1119,11 +1445,48 @@ async function loadWanted() {
                   {
                     class: "small",
                     onclick: () => {
-                      $("#select-media-id").value = item.media_id;
-                      toast(`Using ${item.label}`);
+                      setPicked({
+                        kind: item.kind === "movie" ? "movie" : "episode",
+                        instanceId: instanceId,
+                        mediaId: item.media_id,
+                        label: item.label,
+                      });
+                      $("#library-picked").replaceChildren(
+                        el(
+                          "div",
+                          { class: "panel picked" },
+                          el("strong", {}, item.label),
+                          el("div", { class: "hint" }, `${item.kind}, id ${item.media_id}`),
+                          el(
+                            "div",
+                            {},
+                            el(
+                              "button",
+                              {
+                                class: "small",
+                                onclick: () => runSelection(false, item.media_id),
+                              },
+                              "Search"
+                            ),
+                            " ",
+                            el(
+                              "button",
+                              {
+                                class: "small primary",
+                                onclick: () => {
+                                  if (confirm(`Search and grab the best release for ${item.label}?`))
+                                    runSelection(true, item.media_id);
+                                },
+                              },
+                              "Grab"
+                            )
+                          )
+                        )
+                      );
+                      toast(`Picked ${item.label}`);
                     },
                   },
-                  "Use"
+                  "Pick"
                 )
               )
             )
@@ -1418,7 +1781,9 @@ async function loadHistory() {
           el(
             "tr",
             {},
-            ["When", "Instance", "Item", "Selected", "Size", "Method", "Grabbed"].map((h) => el("th", {}, h))
+            ["When", "Instance", "Item", "Selected", "Size", "Method", "Grabbed", "Links"].map(
+              (h) => el("th", {}, h)
+            )
           )
         ),
         el(
@@ -1446,7 +1811,9 @@ async function loadHistory() {
               ),
               el("td", {}, e.selected_size_gib ? e.selected_size_gib + " GiB" : "—"),
               el("td", {}, e.method + (e.confidence !== null && e.confidence !== undefined ? ` (${(e.confidence * 100).toFixed(0)}%)` : "")),
-              el("td", {}, e.grabbed ? "yes" : e.grab_error ? "failed" : "no")
+              el("td", {}, e.grabbed ? "yes" : e.grab_error ? "failed" : "no"),
+              /* Entries written before links existed simply have none. */
+              el("td", {}, ...openInLinks(e.links, e.app))
             )
           )
         )
@@ -1630,11 +1997,22 @@ function wire() {
   });
   $("#load-wanted").addEventListener("click", loadWanted);
 
-  /* seasons / whole series */
-  $("#select-what").addEventListener("change", updateSelectMode);
-  $("#select-instance").addEventListener("change", updateSelectMode);
-  $("#load-seasons").addEventListener("click", loadSeasons);
-  updateSelectMode();
+  /* library browsing */
+  $("#library-search").addEventListener("click", searchLibrary);
+  $("#library-q").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      searchLibrary();
+    }
+  });
+  /* Items belong to one instance, so switching instance drops the pick. */
+  $("#select-instance").addEventListener("change", () => {
+    setPicked(null);
+    $("#library-results").replaceChildren();
+    $("#library-picked").replaceChildren();
+    setResult("#library-status", "", true);
+  });
+  setPicked(null);
 
   $("#save-nl").addEventListener("click", () =>
     saveConfigPatch({ nl_preferences: $("#nl-preferences").value }, "#nl-status")
@@ -1991,7 +2369,13 @@ function renderSeerrRequests(containerSelector, payload, kind) {
       el(
         "thead",
         {},
-        el("tr", {}, ["Item", "Requested by", "Media", "In the *arr", "Actions"].map((h) => el("th", {}, h)))
+        el(
+          "tr",
+          {},
+          ["Item", "Requested by", "Media", "In the *arr", "Links", "Actions"].map((h) =>
+            el("th", {}, h)
+          )
+        )
       ),
       el(
         "tbody",
@@ -2048,6 +2432,7 @@ function renderSeerrRequests(containerSelector, payload, kind) {
             el("td", {}, num(r.requested_by, "—")),
             el("td", {}, num(r.media_status_label, "—")),
             el("td", {}, r.pushed_to_arr ? "yes" : "not yet"),
+            el("td", {}, ...openInLinks(r.links)),
             el("td", {}, ...buttons, status)
           );
         })
@@ -2107,6 +2492,7 @@ function renderSeerrPanelHeader(request, detail) {
         el("div", { class: "card" }, el("div", { class: "k" }, k), el("div", { class: "v" }, v))
       )
     ),
+    el("div", {}, ...openInLinks(request.links)),
     detail ? el("p", { class: "hint" }, detail) : null
   );
 }
@@ -2127,7 +2513,8 @@ function renderSeerrTargets(payload) {
         "div",
         {},
         el("strong", {}, t.instance_name || t.instance_id),
-        el("span", { class: "hint-inline" }, ` ${t.app || ""}`)
+        el("span", { class: "hint-inline" }, ` ${t.app || ""} `),
+        ...openInLinks(t.links, t.app)
       );
       const body = el("div", {});
       if (t.kind === "movie") {

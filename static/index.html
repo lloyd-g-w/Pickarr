@@ -58,12 +58,13 @@
       <section id="tab-select" class="tab">
         <h2>Search for a release</h2>
         <p class="hint">
-          Search for the best release, then grab it &mdash; or grab any candidate
-          from the list. <em>Search</em> asks the instance for the available
-          releases, applies your hard rules, scores what is left and (when AI is
-          enabled) asks the model to pick the winner; nothing is grabbed until
-          you press a <em>Grab</em> button. Searching the indexers can take
-          several seconds.
+          Find the movie or series in your library, pick it, then
+          <em>Search</em> &mdash; Pickarr asks the instance for the available
+          releases, applies your hard rules, scores what is left and (when AI
+          is enabled) asks the model to pick the winner. Nothing is grabbed
+          until you press a <em>Grab</em> button, and you can grab any
+          candidate from the list instead of the winner. Searching the
+          indexers takes several seconds.
         </p>
 
         <div class="row">
@@ -71,51 +72,27 @@
             Instance
             <select id="select-instance"></select>
           </label>
-          <label>
-            What
-            <select id="select-what">
-              <option value="media">Movie / episode</option>
-              <option value="season">Season (pack)</option>
-              <option value="series">Whole series</option>
-            </select>
-          </label>
-        </div>
-
-        <!-- Movie / episode ---------------------------------------- -->
-        <div class="row" id="select-media-row">
-          <label>
-            Media id
+          <label class="grow">
+            Search your library
             <span class="hint-inline">
-              Radarr: the movie id from its URL. Sonarr: an <em>episode</em> id, not a
-              series id &mdash; use <em>Pick from wanted items</em> below to fill it in,
-              or choose <em>Season</em> / <em>Whole series</em> above to work by series id.
+              a title, or an id: Sonarr series id / Radarr movie id / TMDB / TheTVDB / tt&hellip; IMDb
             </span>
-            <input id="select-media-id" type="number" min="1" placeholder="123" />
+            <input
+              id="library-q"
+              type="search"
+              autocomplete="off"
+              placeholder="breaking bad"
+            />
           </label>
+          <button id="library-search" class="primary">Search library</button>
         </div>
+        <p class="hint">
+          <span id="library-status" class="result"></span>
+        </p>
+        <div id="library-results"></div>
 
-        <!-- Season / whole series (Sonarr) -------------------------- -->
-        <div id="select-series-block" hidden>
-          <div class="row">
-            <label>
-              Series id <span class="hint-inline">(Sonarr series id)</span>
-              <input id="select-series-id" type="number" min="1" placeholder="12" />
-            </label>
-            <label id="select-season-label">
-              Season number
-              <input id="select-season-number" type="number" min="0" placeholder="2" />
-            </label>
-            <label id="select-seasons-label" hidden>
-              Seasons <span class="hint-inline">optional, comma separated; empty = all</span>
-              <input id="select-seasons" type="text" placeholder="1, 2" />
-            </label>
-          </div>
-          <p>
-            <button id="load-seasons">Load seasons</button>
-            <span id="seasons-status" class="result"></span>
-          </p>
-          <div id="seasons-list"></div>
-        </div>
+        <!-- The picked movie or series, with its seasons and episodes. -->
+        <div id="library-picked"></div>
 
         <details>
           <summary>Pick from wanted items</summary>
@@ -146,6 +123,7 @@
           <label class="inline"><input id="select-use-ai" type="checkbox" checked /> Use AI</label>
           <button id="btn-search">Search</button>
           <button id="btn-grab" class="primary">Grab</button>
+          <span id="select-target" class="hint-inline">nothing picked yet</span>
           <span id="select-status" class="result"></span>
         </p>
 

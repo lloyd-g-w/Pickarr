@@ -204,6 +204,34 @@ label input[type="checkbox"] {
   flex: 1 1 220px;
 }
 
+/* The library search box should take the space the instance picker leaves. */
+.row > label.grow {
+  flex: 3 1 320px;
+}
+
+/* "Open in Sonarr" / "Open in Seerr": a link that reads as a small button. */
+.linkbtn {
+  display: inline-block;
+  padding: 0.15rem 0.45rem;
+  margin-right: 0.3rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.linkbtn:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+/* The picked movie/series stands out from the result rows above it. */
+.picked {
+  border-left: 3px solid var(--accent);
+}
+
 .form-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));

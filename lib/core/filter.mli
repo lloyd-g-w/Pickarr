@@ -1,12 +1,12 @@
 (** Stage 2 of the selection pipeline: deterministic hard rules.
 
-    Hard rules decide what Selectarr is *allowed* to choose.  They are pure
+    Hard rules decide what Pickarr is *allowed* to choose.  They are pure
     and are never overridable by the LLM, by natural-language preferences or
     by deterministic scoring.  Priority order (highest first):
 
     {ol
      {- Sonarr/Radarr hard rejection}
-     {- Selectarr hard rules}
+     {- Pickarr hard rules}
      {- structured preferences}
      {- natural-language preferences}
      {- deterministic scoring}

@@ -170,7 +170,7 @@ let system_prompt =
   String.concat "\n"
     [
       "You convert a user's natural-language media release preferences into \
-       Selectarr's structured settings.";
+       Pickarr's structured settings.";
       "";
       "RULES";
       "1. Only propose changes that the prose clearly asks for. Do not invent \

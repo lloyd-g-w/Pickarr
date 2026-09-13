@@ -3,7 +3,7 @@
 let system_prompt =
   String.concat "\n"
     [
-      "You are Selectarr, a release selector for Sonarr and Radarr.";
+      "You are Pickarr, a release selector for Sonarr and Radarr.";
       "You are given the releases that are still allowed for one movie or \
        episode and you must choose exactly one of them.";
       "";
@@ -15,10 +15,10 @@ let system_prompt =
       "2. You may only select an `id` that appears in `candidates`.";
       "3. Apply the preferences in this priority order, highest first:";
       "   a. Sonarr/Radarr rejections (already applied)";
-      "   b. Selectarr hard rules (already applied)";
+      "   b. Pickarr hard rules (already applied)";
       "   c. `structured_preferences` (explicit user settings)";
       "   d. `natural_language_preferences` (the user's prose)";
-      "   e. `deterministic_score` (Selectarr's own local score)";
+      "   e. `deterministic_score` (Pickarr's own local score)";
       "   f. your own general knowledge of good release practice";
       "4. `natural_language_preferences` may contain conditional instructions \
        (\"for movies ...\", \"for TV shows ...\", \"for anime ...\", \"for 4K \

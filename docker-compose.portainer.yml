@@ -17,9 +17,13 @@ services:
     ports:
       - "8484:8484"
     volumes:
+      # Named volume, or a host path such as /mnt/main/configs/pickarr:/data
       - pickarr_data:/data
     environment:
       TZ: ${TZ:-Etc/UTC}
+      # Run as this uid/gid, like the *arr images (TrueNAS SCALE apps use 568).
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
       # Uncomment to pre-seed instances instead of using the UI:
       # SONARR_URL: http://sonarr:8989
       # SONARR_API_KEY: ${SONARR_API_KEY}

@@ -41,12 +41,9 @@ installation — no environment variables are required, everything else is
 configured in the UI.
 
 The compose file stores `config.json`, `history.jsonl` and `auth.json` in
-`./data`, which the container writes as uid/gid 1000. If your host user has a
-different uid, create it up front:
-
-```bash
-mkdir -p data && sudo chown 1000:1000 data
-```
+`./data`. Like the *arr images, the container honours `PUID`/`PGID` (default
+`1000`/`1000`) and fixes the ownership of `/data` on start, so set them to
+the user that owns your config directory (e.g. `568` on TrueNAS SCALE).
 
 Using **Portainer**? Paste `docker-compose.portainer.yml` into a new stack —
 it pulls the prebuilt `ghcr.io/lloyd-g-w/pickarr` image and needs no host
@@ -427,8 +424,10 @@ prebuilt image, or builds from the repository with `docker compose build`),
 [`docker-compose.portainer.yml`](docker-compose.portainer.yml) (Portainer
 stack, see below), [`docker-compose.full.example.yml`](docker-compose.full.example.yml)
 (the whole stack) and [`.env.example`](.env.example) (every supported
-variable). The image runs as uid 1000 and `/data` must be a writable volume;
-the container refuses to start otherwise and says exactly that.
+variable). The container starts as root only to apply `PUID`/`PGID` and fix
+the ownership of `/data`, then drops privileges; set `user:` in compose if you
+prefer to skip that step (then `/data` must already be writable by that
+user).
 
 The image is published automatically by
 [`.github/workflows/docker.yml`](.github/workflows/docker.yml) to

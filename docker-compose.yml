@@ -13,12 +13,14 @@ services:
     ports:
       - "8484:8484"
     volumes:
-      # Config, selection history and credentials. Owned by uid/gid 1000 in
-      # the image; run `mkdir -p data && sudo chown 1000:1000 data` if your
-      # host user has a different uid.
+      # Config, selection history and credentials. The container fixes the
+      # ownership to PUID:PGID on start.
       - ./data:/data
     env_file:
       - path: .env
         required: false
     environment:
       TZ: ${TZ:-Etc/UTC}
+      # Run as this uid/gid (owner of ./data), like the *arr images.
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}

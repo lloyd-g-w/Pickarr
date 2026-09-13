@@ -36,7 +36,7 @@ LABEL org.opencontainers.image.title="Pickarr" \
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      libev4 libssl3 libgmp10 ca-certificates curl tzdata \
+      libev4 libssl3 libgmp10 ca-certificates curl tzdata gosu \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --uid 1000 --create-home --shell /usr/sbin/nologin pickarr \
  && mkdir -p /data /app \
@@ -44,14 +44,21 @@ RUN apt-get update \
  && chmod 755 /data
 
 COPY --from=builder /home/opam/pickarr/_build/default/bin/main.exe /usr/local/bin/pickarr
-COPY --chown=pickarr:pickarr static /app/static
+COPY docker/entrypoint.sh /usr/local/bin/pickarr-entrypoint
+COPY static /app/static
+RUN chmod 755 /usr/local/bin/pickarr /usr/local/bin/pickarr-entrypoint \
+ && chmod -R a+rX /app/static
 
 ENV DATA_DIR=/data \
     STATIC_DIR=/app/static \
     HOST=0.0.0.0 \
-    PORT=8484
+    PORT=8484 \
+    PUID=1000 \
+    PGID=1000
 
-USER pickarr
+# The entrypoint starts as root only to apply PUID/PGID and fix /data
+# ownership, then drops to that user (like the linuxserver/*arr images).
+# Set `user:` in compose to skip that step entirely.
 WORKDIR /app
 VOLUME ["/data"]
 EXPOSE 8484
@@ -59,4 +66,4 @@ EXPOSE 8484
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD curl -fsS http://127.0.0.1:${PORT}/health || exit 1
 
-ENTRYPOINT ["/usr/local/bin/pickarr"]
+ENTRYPOINT ["/usr/local/bin/pickarr-entrypoint"]

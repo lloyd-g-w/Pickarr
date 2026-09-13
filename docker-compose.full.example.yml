@@ -24,6 +24,8 @@ services:
       - ./config/pickarr:/data
     environment:
       TZ: Etc/UTC
+      PUID: "1000"
+      PGID: "1000"
       # --- Sonarr / Radarr -------------------------------------------------
       SONARR_URL: http://sonarr:8989
       SONARR_API_KEY: replace-with-sonarr-api-key

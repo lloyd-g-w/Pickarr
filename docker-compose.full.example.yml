@@ -14,8 +14,8 @@
 #   docker compose up -d
 services:
   pickarr:
+    image: ghcr.io/lloyd-g-w/pickarr:latest
     build: .
-    image: pickarr:latest
     container_name: pickarr
     restart: unless-stopped
     ports:

@@ -1,0 +1,40 @@
+# Pickarr for Portainer (Stacks -> Add stack -> Web editor: paste this file).
+#
+# Uses the prebuilt image from GitHub Container Registry, so nothing is built
+# on the host, and a named volume, so no host path is required. After
+# deploying, open http://<host>:8484 and create the admin account; Sonarr/
+# Radarr URLs and API keys, the LLM and all rules are configured in the UI.
+#
+# Optional: set environment variables in Portainer's "Environment variables"
+# section (e.g. TZ, PICKARR_USERNAME/PICKARR_PASSWORD, SONARR_URL,
+# SONARR_API_KEY, RADARR_URL, RADARR_API_KEY, LLM_BASE_URL, LLM_API_KEY,
+# LLM_MODEL, LLM_ENABLED). See .env.example for the full list.
+services:
+  pickarr:
+    image: ghcr.io/lloyd-g-w/pickarr:latest
+    container_name: pickarr
+    restart: unless-stopped
+    ports:
+      - "8484:8484"
+    volumes:
+      - pickarr_data:/data
+    environment:
+      TZ: ${TZ:-Etc/UTC}
+      # Uncomment to pre-seed instances instead of using the UI:
+      # SONARR_URL: http://sonarr:8989
+      # SONARR_API_KEY: ${SONARR_API_KEY}
+      # RADARR_URL: http://radarr:7878
+      # RADARR_API_KEY: ${RADARR_API_KEY}
+    # If Sonarr/Radarr run in another stack, join their network so the
+    # container names resolve (e.g. http://sonarr:8989):
+    # networks:
+    #   - arr
+    # Note: with a Portainer-created custom network, uncomment the block below.
+
+volumes:
+  pickarr_data:
+
+# networks:
+#   arr:
+#     external: true
+#     name: arr

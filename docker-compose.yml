@@ -4,8 +4,10 @@
 # configured in the UI. The .env file is optional; see .env.example.
 services:
   pickarr:
+    # Prebuilt image from GHCR; `docker compose build` still works because
+    # the build context is declared too.
+    image: ghcr.io/lloyd-g-w/pickarr:latest
     build: .
-    image: pickarr:latest
     container_name: pickarr
     restart: unless-stopped
     ports:

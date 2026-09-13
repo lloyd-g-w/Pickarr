@@ -48,6 +48,10 @@ different uid, create it up front:
 mkdir -p data && sudo chown 1000:1000 data
 ```
 
+Using **Portainer**? Paste `docker-compose.portainer.yml` into a new stack —
+it pulls the prebuilt `ghcr.io/lloyd-g-w/pickarr` image and needs no host
+paths. See [Portainer](#portainer).
+
 Want the whole media stack in one file? `docker-compose.full.example.yml` runs
 Pickarr next to Sonarr, Radarr, Prowlarr and qBittorrent on one network, so the
 instance URLs are simply `http://sonarr:8989` and `http://radarr:7878`.
@@ -418,11 +422,41 @@ Or build it yourself:
 docker build -t pickarr .
 ```
 
-Files: [`docker-compose.yml`](docker-compose.yml) (Pickarr alone, built from
-the repository), [`docker-compose.full.example.yml`](docker-compose.full.example.yml)
+Files: [`docker-compose.yml`](docker-compose.yml) (Pickarr alone; pulls the
+prebuilt image, or builds from the repository with `docker compose build`),
+[`docker-compose.portainer.yml`](docker-compose.portainer.yml) (Portainer
+stack, see below), [`docker-compose.full.example.yml`](docker-compose.full.example.yml)
 (the whole stack) and [`.env.example`](.env.example) (every supported
 variable). The image runs as uid 1000 and `/data` must be a writable volume;
 the container refuses to start otherwise and says exactly that.
+
+The image is published automatically by
+[`.github/workflows/docker.yml`](.github/workflows/docker.yml) to
+`ghcr.io/lloyd-g-w/pickarr` (`latest` for `main`, `vX.Y.Z` for tags,
+`sha-…` for every commit).
+
+### Portainer
+
+Portainer's stack editor cannot `build:` from a pasted file, so use the
+prebuilt image:
+
+1. **Stacks → Add stack → Web editor**, name it `pickarr`.
+2. Paste [`docker-compose.portainer.yml`](docker-compose.portainer.yml)
+   (or choose **Repository** and point Portainer at this Git repo with
+   *Compose path* `docker-compose.portainer.yml`; enable *GitOps updates* if
+   you want it to follow `main`).
+3. Optionally add environment variables in the stack's *Environment
+   variables* section (`TZ`, `SONARR_URL`, `SONARR_API_KEY`, `LLM_*`, …) —
+   everything can also be set later in the UI.
+4. If Sonarr/Radarr live in another stack, uncomment the `networks` block and
+   put the name of their Docker network so `http://sonarr:8989` resolves;
+   otherwise use the host IP (`http://192.168.1.10:8989`).
+5. **Deploy the stack**, open `http://<host>:8484`, create the admin account,
+   add your instances.
+
+Data (config, history, credentials, API key) lives in the named volume
+`pickarr_data`; updating the image in Portainer (*Stacks → pickarr → Pull and
+redeploy*) keeps it.
 
 ## Development
 

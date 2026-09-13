@@ -4,9 +4,9 @@
 # instances ("Radarr" and "Radarr 4K") and Pickarr itself, then asserts on the
 # calls the fakes recorded.
 set -u
-cd "$(dirname "$0")" >/dev/null
-
-REPO=/home/ubu3/projects/worktrees/Pickarr/pi-worktree-b644d6df-92ec-4908-a6ff-a1c494a82f19-s0-0
+HERE="$(cd "$(dirname "$0")" && pwd)"
+REPO="$(cd "$HERE/../.." && pwd)"
+cd "$HERE" >/dev/null
 PICKARR_PORT=19300
 SEERR_PORT=19301
 RADARR_PORT=19302
@@ -25,9 +25,9 @@ check() { if [ "$2" = "$3" ]; then pass "$1"; else fail "$1 (expected '$3', got 
 rm -rf "$DATA" "$SEERR_STATE" "$RADARR_STATE" "$RADARR4K_STATE" "$COOKIE"
 mkdir -p "$DATA"
 
-python3 "$(dirname "$0")"/fake_seerr.py "$SEERR_PORT" "$SEERR_STATE" & SEERR_PID=$!
-python3 "$(dirname "$0")"/fake_radarr_seerr.py "$RADARR_PORT" "$RADARR_STATE" "Radarr" "$REPO/test/arr/fixtures" & RADARR_PID=$!
-python3 "$(dirname "$0")"/fake_radarr_seerr.py "$RADARR4K_PORT" "$RADARR4K_STATE" "Radarr 4K" "$REPO/test/arr/fixtures" & RADARR4K_PID=$!
+python3 "$HERE"/fake_seerr.py "$SEERR_PORT" "$SEERR_STATE" & SEERR_PID=$!
+python3 "$HERE"/fake_radarr_seerr.py "$RADARR_PORT" "$RADARR_STATE" "Radarr" "$REPO/test/arr/fixtures" & RADARR_PID=$!
+python3 "$HERE"/fake_radarr_seerr.py "$RADARR4K_PORT" "$RADARR4K_STATE" "Radarr 4K" "$REPO/test/arr/fixtures" & RADARR4K_PID=$!
 DATA_DIR="$DATA" PORT=$PICKARR_PORT PICKARR_USERNAME=admin PICKARR_PASSWORD=secret123 \
   "$REPO/_build/default/bin/main.exe" > /tmp/seerr-e2e-pickarr.log 2>&1 & PICKARR_PID=$!
 

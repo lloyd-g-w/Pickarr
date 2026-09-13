@@ -1,0 +1,136 @@
+# Full example stack: Pickarr next to Sonarr, Radarr, Prowlarr and qBittorrent
+# on one Docker network, so the instance URLs are simply http://sonarr:8989 and
+# http://radarr:7878.
+#
+# For Pickarr alone use docker-compose.yml instead.
+#
+# Pickarr only talks to Sonarr and Radarr over their HTTP APIs. Sonarr and
+# Radarr keep owning indexers (through Prowlarr), the download client
+# (qBittorrent) and importing.
+#
+# Copy to docker-compose.yml, fill in the API keys, then:
+#   docker compose up -d
+services:
+  pickarr:
+    build: .
+    image: pickarr:latest
+    container_name: pickarr
+    restart: unless-stopped
+    ports:
+      - "8484:8484"
+    volumes:
+      - ./config/pickarr:/data
+    environment:
+      TZ: Etc/UTC
+      # --- Sonarr / Radarr -------------------------------------------------
+      SONARR_URL: http://sonarr:8989
+      SONARR_API_KEY: replace-with-sonarr-api-key
+      RADARR_URL: http://radarr:7878
+      RADARR_API_KEY: replace-with-radarr-api-key
+      # --- LLM (any OpenAI-compatible server) ------------------------------
+      LLM_ENABLED: "true"
+      LLM_PROVIDER: openai-compatible
+      LLM_BASE_URL: http://host.docker.internal:11434/v1
+      LLM_API_KEY: replace-or-leave-empty-for-local-servers
+      LLM_MODEL: qwen2.5:14b-instruct
+      # --- Hard rules ------------------------------------------------------
+      MAX_RELEASE_SIZE_GIB: "25"
+      MIN_SEEDERS: "3"
+      DISALLOWED_CODECS: XviD
+      BLOCKED_RELEASE_GROUPS: ""
+      ALLOW_REMUX: "true"
+      # --- Structured preferences -----------------------------------------
+      PREFERRED_CODECS: x265,x264
+      PREFERRED_SOURCES: WEB-DL,Bluray
+      PREFERRED_RELEASE_GROUPS: FLUX,NTb,HONE
+      PREFERRED_LANGUAGES: English
+      HDR_PREFERENCE: prefer
+      DOLBY_VISION_PREFERENCE: neutral
+      # --- Natural language preferences ------------------------------------
+      NL_PREFERENCES: |
+        Prefer reasonably sized 1080p WEB-DLs rather than huge files.
+        Prefer x265/HEVC when quality is comparable.
+        FLUX, NTb and HONE are usually good.
+        Avoid WEBRip if a WEB-DL exists.
+        For movies I care more about quality than file size.
+        For TV shows I would rather save space.
+        Avoid Dolby Vision unless there is HDR10 fallback.
+      # --- Automatic mode (start as a dry run) ------------------------------
+      AUTO_MODE_ENABLED: "false"
+      AUTO_MODE_GRAB: "false"
+      AUTO_MODE_INTERVAL_SECONDS: "900"
+      # --- Service -----------------------------------------------------------
+      LOG_LEVEL: info
+      # Access control: the UI asks you to set a password on first load.
+      # For scripts and *arr webhooks, set an API key (X-Api-Key or ?apikey=):
+      # PICKARR_API_KEY: replace-with-a-long-random-string
+      # Or define the login from the environment instead of the UI:
+      # PICKARR_USERNAME: admin
+      # PICKARR_PASSWORD: replace-with-a-long-password
+    depends_on:
+      - sonarr
+      - radarr
+
+  sonarr:
+    image: lscr.io/linuxserver/sonarr:latest
+    container_name: sonarr
+    restart: unless-stopped
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      TZ: Etc/UTC
+    volumes:
+      - ./config/sonarr:/config
+      - ./media/tv:/tv
+      - ./downloads:/downloads
+    ports:
+      - "8989:8989"
+
+  radarr:
+    image: lscr.io/linuxserver/radarr:latest
+    container_name: radarr
+    restart: unless-stopped
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      TZ: Etc/UTC
+    volumes:
+      - ./config/radarr:/config
+      - ./media/movies:/movies
+      - ./downloads:/downloads
+    ports:
+      - "7878:7878"
+
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:latest
+    container_name: prowlarr
+    restart: unless-stopped
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      TZ: Etc/UTC
+    volumes:
+      - ./config/prowlarr:/config
+    ports:
+      - "9696:9696"
+
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:latest
+    container_name: qbittorrent
+    restart: unless-stopped
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      TZ: Etc/UTC
+      WEBUI_PORT: "8080"
+    volumes:
+      - ./config/qbittorrent:/config
+      - ./downloads:/downloads
+    ports:
+      - "8080:8080"
+      - "6881:6881"
+      - "6881:6881/udp"
+
+networks:
+  default:
+    name: pickarr

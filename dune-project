@@ -20,4 +20,5 @@
   fmt
   uri
   re
+  digestif
   (alcotest :with-test)))

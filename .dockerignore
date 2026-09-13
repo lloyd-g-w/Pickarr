@@ -1,0 +1,13 @@
+_build/
+_opam/
+vendor/
+.git/
+.github/
+data/
+docs/
+*.log
+*.md
+.env
+.dockerignore
+Dockerfile
+docker-compose*.yml

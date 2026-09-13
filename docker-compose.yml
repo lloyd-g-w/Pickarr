@@ -1,0 +1,22 @@
+# Minimal Pickarr stack: `docker compose up -d` and open http://localhost:8484
+#
+# Everything else (Sonarr/Radarr instances, LLM, rules, preferences) is
+# configured in the UI. The .env file is optional; see .env.example.
+services:
+  pickarr:
+    build: .
+    image: pickarr:latest
+    container_name: pickarr
+    restart: unless-stopped
+    ports:
+      - "8484:8484"
+    volumes:
+      # Config, selection history and credentials. Owned by uid/gid 1000 in
+      # the image; run `mkdir -p data && sudo chown 1000:1000 data` if your
+      # host user has a different uid.
+      - ./data:/data
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      TZ: ${TZ:-Etc/UTC}

@@ -1,0 +1,526 @@
+:root {
+  --bg: #14181d;
+  --panel: #1c2229;
+  --panel-2: #232b34;
+  --line: #303a45;
+  --text: #e6ebf1;
+  --muted: #93a1b1;
+  --accent: #4aa3ff;
+  --good: #3fb950;
+  --warn: #d29922;
+  --bad: #f85149;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+header {
+  padding: 1rem 1.5rem 0;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+
+header h1 {
+  margin: 0;
+  font-size: 1.4rem;
+  letter-spacing: 0.02em;
+}
+
+.tagline {
+  margin: 0.2rem 0 0.8rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+nav#tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+nav#tabs button {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  padding: 0.55rem 0.9rem;
+  cursor: pointer;
+  font-size: 0.95rem;
+}
+
+nav#tabs button:hover {
+  color: var(--text);
+}
+
+nav#tabs button.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+main {
+  padding: 1.5rem;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.tab {
+  display: none;
+}
+
+.tab.active {
+  display: block;
+}
+
+h2 {
+  font-size: 1.1rem;
+  margin: 1.6rem 0 0.6rem;
+  padding-bottom: 0.3rem;
+  border-bottom: 1px solid var(--line);
+}
+
+h2:first-child {
+  margin-top: 0;
+}
+
+h3 {
+  font-size: 1rem;
+  margin: 1.4rem 0 0.4rem;
+}
+
+p.hint,
+.hint {
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.hint-inline {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: normal;
+}
+
+button {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 0.45rem 0.8rem;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+button:hover {
+  border-color: var(--accent);
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #08121c;
+  font-weight: 600;
+}
+
+button.danger {
+  border-color: var(--bad);
+  color: #ffd9d6;
+}
+
+button.small {
+  padding: 0.2rem 0.5rem;
+  font-size: 0.8rem;
+}
+
+input,
+select,
+textarea {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 5px;
+  padding: 0.4rem 0.5rem;
+  font: inherit;
+  width: 100%;
+}
+
+textarea {
+  resize: vertical;
+  font-family: inherit;
+}
+
+textarea.nl-editor {
+  min-height: 260px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.92rem;
+  line-height: 1.55;
+  border-color: var(--accent);
+  background: #10161c;
+}
+
+label {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin-bottom: 0.6rem;
+}
+
+label.block {
+  display: block;
+  margin: 0.8rem 0;
+}
+
+label.inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  width: auto;
+  margin-right: 0.8rem;
+  color: var(--text);
+}
+
+label input[type="checkbox"] {
+  width: auto;
+}
+
+.row {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.row > label {
+  flex: 1 1 220px;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 0.4rem 1rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.9rem;
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 0.75rem;
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.7rem 0.9rem;
+}
+
+.card .k {
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.card .v {
+  font-size: 1.05rem;
+  margin-top: 0.2rem;
+  word-break: break-word;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.9rem;
+  margin-bottom: 0.8rem;
+}
+
+.explainer {
+  background: var(--panel);
+  border-left: 3px solid var(--accent);
+  padding: 0.6rem 1rem;
+  border-radius: 4px;
+}
+
+.explainer p {
+  margin: 0.3rem 0;
+}
+
+.priority {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.6rem 1rem;
+  margin: 0.8rem 0;
+}
+
+.priority ol {
+  margin: 0.4rem 0;
+  padding-left: 1.3rem;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.87rem;
+  margin-top: 0.5rem;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 0.35rem 0.5rem;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+
+th {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+tr.winner td {
+  background: rgba(63, 185, 80, 0.1);
+}
+
+.selected-card {
+  background: var(--panel);
+  border: 1px solid var(--good);
+  border-radius: 6px;
+  padding: 0.9rem 1rem;
+  margin: 0.8rem 0;
+}
+
+.selected-card h3 {
+  margin: 0 0 0.3rem;
+}
+
+.selected-card .title {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 0.95rem;
+  word-break: break-all;
+}
+
+ul.why {
+  margin: 0.4rem 0 0;
+  padding-left: 1.2rem;
+}
+
+ul.why li {
+  margin: 0.15rem 0;
+}
+
+.conflicts {
+  border-left: 3px solid var(--warn);
+  padding: 0.4rem 0.8rem;
+  margin-top: 0.6rem;
+  background: rgba(210, 153, 34, 0.08);
+}
+
+.badge {
+  display: inline-block;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.badge.ok {
+  color: var(--good);
+  border-color: var(--good);
+}
+
+.badge.bad {
+  color: var(--bad);
+  border-color: var(--bad);
+}
+
+.badge.warn {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+
+.result {
+  margin-left: 0.6rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.result.ok {
+  color: var(--good);
+}
+
+.result.bad {
+  color: var(--bad);
+}
+
+pre {
+  background: #10161c;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.8rem;
+  overflow: auto;
+  font-size: 0.82rem;
+  max-height: 70vh;
+}
+
+details {
+  margin: 0.6rem 0;
+}
+
+summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-size: 0.9rem;
+  margin-bottom: 0.4rem;
+}
+
+#toast {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  background: var(--panel-2);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 0.6rem 0.9rem;
+  max-width: 420px;
+  z-index: 10;
+}
+
+#toast.bad {
+  border-color: var(--bad);
+}
+
+.instance-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.9rem;
+  margin-bottom: 0.8rem;
+}
+
+.instance-card header {
+  background: none;
+  border: none;
+  padding: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.proposal-item {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.5rem 0.8rem;
+  margin-bottom: 0.4rem;
+  background: var(--panel);
+}
+
+code {
+  background: #10161c;
+  padding: 0.05rem 0.3rem;
+  border-radius: 3px;
+  font-size: 0.85em;
+}
+
+/* --- server-rendered login / setup pages --------------------------- */
+.auth-body {
+  display: flex;
+  min-height: 100vh;
+}
+
+.auth-shell {
+  margin: auto;
+  padding: 2rem 1.5rem;
+  width: 100%;
+  max-width: 420px;
+}
+
+.auth-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 1.5rem;
+}
+
+.auth-logo {
+  margin: 0 0 0.2rem;
+  font-size: 1.6rem;
+  letter-spacing: 0.03em;
+}
+
+.auth-title {
+  margin: 0.6rem 0 0.2rem;
+  font-size: 1.05rem;
+}
+
+.auth-message {
+  border-radius: 5px;
+  padding: 0.5rem 0.7rem;
+  font-size: 0.88rem;
+  border-left: 3px solid var(--warn);
+  background: rgba(210, 153, 34, 0.1);
+}
+
+.auth-message.bad {
+  border-left-color: var(--bad);
+  background: rgba(248, 81, 73, 0.12);
+  color: #ffd9d6;
+}
+
+button.block {
+  width: 100%;
+  margin-top: 0.8rem;
+  padding: 0.55rem;
+}
+
+/* --- first-run guidance -------------------------------------------- */
+.get-started {
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 1rem 1.2rem;
+  margin-bottom: 1.2rem;
+}
+
+.get-started h2 {
+  margin-top: 0;
+  border: none;
+}
+
+ol.steps {
+  margin: 0.6rem 0 0;
+  padding-left: 1.3rem;
+}
+
+ol.steps li {
+  margin-bottom: 0.7rem;
+}
+
+ol.steps button {
+  margin-top: 0.3rem;
+}
+
+.with-toggle {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.with-toggle input {
+  flex: 1 1 auto;
+}

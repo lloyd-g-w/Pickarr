@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Pickarr</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Pickarr</h1>
+      <p class="tagline">AI-assisted release selection for Sonarr and Radarr</p>
+      <nav id="tabs">
+        <button data-tab="dashboard" class="active">Dashboard</button>
+        <button data-tab="select">Select</button>
+        <button data-tab="rules">Rules &amp; Preferences</button>
+        <button data-tab="instances">Instances</button>
+        <button data-tab="llm">AI &amp; Automatic</button>
+        <button data-tab="security">Security</button>
+        <button data-tab="history">History</button>
+        <button data-tab="logs">Logs</button>
+      </nav>
+    </header>
+
+    <div id="toast" hidden></div>
+
+    <main id="app">
+      <!-- ---------------------------------------------------------- -->
+      <section id="tab-dashboard" class="tab active">
+        <div id="get-started" class="get-started" hidden></div>
+
+        <h2>Status</h2>
+        <div id="status-cards" class="cards">Loading…</div>
+
+        <h2>Instances</h2>
+        <div id="dashboard-instances">Loading…</div>
+
+        <h2>AI</h2>
+        <p>
+          <button id="test-llm">Test AI connection</button>
+          <span id="llm-test-result" class="result"></span>
+        </p>
+
+        <h2>Automatic mode</h2>
+        <div id="automatic-status">Loading…</div>
+        <p>
+          <button id="run-automatic">Run now</button>
+          <span id="automatic-run-result" class="result"></span>
+        </p>
+        <div id="automatic-results"></div>
+      </section>
+
+      <!-- ---------------------------------------------------------- -->
+      <section id="tab-select" class="tab">
+        <h2>Run a selection</h2>
+        <p class="hint">
+          Pickarr asks the instance for the releases available for one movie or
+          episode, applies your hard rules, scores what is left and (when AI is
+          enabled) asks the model to pick the winner. Nothing is grabbed unless
+          you press <em>Select &amp; grab</em>.
+        </p>
+
+        <div class="row">
+          <label>
+            Instance
+            <select id="select-instance"></select>
+          </label>
+          <label>
+            Media id <span class="hint-inline">(movie id for Radarr, episode id for Sonarr)</span>
+            <input id="select-media-id" type="number" min="1" placeholder="123" />
+          </label>
+        </div>
+
+        <details>
+          <summary>Pick from wanted items</summary>
+          <div class="row">
+            <label>
+              List
+              <select id="wanted-kind">
+                <option value="missing">Missing</option>
+                <option value="cutoff">Cutoff unmet</option>
+              </select>
+            </label>
+            <button id="load-wanted">Load wanted</button>
+          </div>
+          <div id="wanted-list"></div>
+        </details>
+
+        <label class="block">
+          Temporary instruction
+          <span class="hint-inline">applies only to this selection and is not saved</span>
+          <textarea
+            id="select-instruction"
+            rows="3"
+            placeholder="For this movie specifically, pick the highest quality release regardless of size."
+          ></textarea>
+        </label>
+
+        <p>
+          <label class="inline"><input id="select-use-ai" type="checkbox" checked /> Use AI</label>
+          <button id="btn-preview">Preview</button>
+          <button id="btn-grab" class="danger">Select &amp; grab</button>
+          <span id="select-status" class="result"></span>
+        </p>
+
+        <div id="select-result"></div>
+      </section>
+
+      <!-- ---------------------------------------------------------- -->
+      <section id="tab-rules" class="tab">
+        <h2>Rules &amp; Preferences</h2>
+        <div class="explainer">
+          <p>Hard rules determine what Pickarr is allowed to choose.</p>
+          <p>Structured preferences influence scoring predictably.</p>
+          <p>Natural language preferences let the AI understand more nuanced instructions.</p>
+        </div>
+
+        <div class="priority">
+          <strong>Priority order</strong>
+          <ol>
+            <li>Sonarr/Radarr hard rejection</li>
+            <li>Pickarr hard rules</li>
+            <li>Explicit structured preferences</li>
+            <li>Natural language preferences</li>
+            <li>Deterministic scoring</li>
+            <li>General default AI preferences</li>
+          </ol>
+          <p class="hint">
+            Natural language preferences are soft: they can never override a hard
+            rule. If you ask for AV1 but AV1 is in the blocked codec list, AV1 is
+            still rejected.
+          </p>
+        </div>
+
+        <h3>Natural language preferences</h3>
+        <p class="hint">
+          Describe what you want in plain English. This text is sent to the model
+          every time it ranks releases, together with the metadata of the item
+          being evaluated, so conditional instructions ("for TV shows…", "for 4K…")
+          are applied only where they are relevant.
+        </p>
+        <textarea
+          id="nl-preferences"
+          class="nl-editor"
+          rows="14"
+          placeholder="Prefer reasonably sized 1080p WEB-DLs rather than huge files.&#10;Prefer x265/HEVC when quality is comparable.&#10;FLUX, NTb and HONE are usually good.&#10;Avoid WEBRip if a WEB-DL exists.&#10;For movies I care more about quality than file size.&#10;For TV shows I would rather save space.&#10;Avoid Dolby Vision unless there is HDR10 fallback.&#10;I don't care much about Atmos."
+        ></textarea>
+        <p>
+          <button id="save-nl" class="primary">Save natural language preferences</button>
+          <button id="propose-rules">Convert to structured rules</button>
+          <span id="nl-status" class="result"></span>
+        </p>
+        <div id="proposal"></div>
+
+        <h3>Hard rules</h3>
+        <p class="hint">Deterministic. A release that violates any of these is rejected and can never be chosen.</p>
+        <div id="hard-rules-form" class="form-grid"></div>
+
+        <h3>Structured preferences</h3>
+        <p class="hint">Soft. These shift the deterministic score in a predictable way.</p>
+        <div id="preferences-form" class="form-grid"></div>
+
+        <details>
+          <summary>Scoring weights</summary>
+          <p class="hint">Points added (or removed) by each scoring component.</p>
+          <div id="weights-form" class="form-grid"></div>
+        </details>
+
+        <p>
+          <button id="save-rules" class="primary">Save rules &amp; preferences</button>
+          <span id="rules-status" class="result"></span>
+        </p>
+      </section>
+
+      <!-- ---------------------------------------------------------- -->
+      <section id="tab-instances" class="tab">
+        <h2>Sonarr &amp; Radarr instances</h2>
+        <p class="hint">
+          Multiple instances of each application are supported. Per-instance
+          natural language preferences are appended to the global ones for
+          selections on that instance.
+        </p>
+        <div id="instances-editor"></div>
+        <p>
+          <button id="add-sonarr">Add Sonarr instance</button>
+          <button id="add-radarr">Add Radarr instance</button>
+          <button id="save-instances" class="primary">Save instances</button>
+          <span id="instances-status" class="result"></span>
+        </p>
+      </section>
+
+      <!-- ---------------------------------------------------------- -->
+      <section id="tab-llm" class="tab">
+        <h2>AI settings</h2>
+        <p class="hint">
+          Any OpenAI-compatible <code>/chat/completions</code> endpoint works,
+          including local servers such as llama.cpp, Ollama or vLLM.
+        </p>
+        <div id="llm-form" class="form-grid"></div>
+
+
+        <h2>Automatic mode</h2>
+        <p class="hint">
+          Pickarr polls each instance that has <em>automatic</em> enabled for
+          wanted items, runs the pipeline and grabs the winner. Leave
+          <em>grab</em> off first: passes are then dry runs that only log what
+          would have been grabbed.
+        </p>
+        <div id="automatic-form" class="form-grid"></div>
+
+        <p>
+          <button id="save-llm" class="primary">Save AI &amp; automatic settings</button>
+          <span id="llm-status" class="result"></span>
+        </p>
+      </section>
+
+      <!-- ---------------------------------------------------------- -->
+      <section id="tab-security" class="tab">
+        <h2>General &amp; Security</h2>
+        <p class="hint" id="auth-summary"></p>
+
+        <h3>Account</h3>
+        <div class="row">
+          <label>
+            User name
+            <input id="auth-username" type="text" autocomplete="username" />
+          </label>
+          <label>
+            New password <span class="hint-inline">at least 8 characters</span>
+            <input id="auth-new-password" type="password" autocomplete="new-password" />
+          </label>
+          <label>
+            Current password <span class="hint-inline">required to confirm the change</span>
+            <input id="auth-current-password" type="password" autocomplete="current-password" />
+          </label>
+        </div>
+        <p>
+          <button id="auth-save" class="primary">Save account</button>
+          <button id="auth-logout">Sign out</button>
+          <span id="auth-status" class="result"></span>
+        </p>
+
+        <h3>API key</h3>
+        <p class="hint">
+          Send it as <code>X-Api-Key</code>, or as <code>?apikey=</code> in a URL.
+          Sonarr/Radarr webhooks need the query form:
+          <code id="webhook-example">http://pickarr:8484/api/webhook/&lt;instance_id&gt;?apikey=&lt;key&gt;</code>
+        </p>
+        <div class="row">
+          <label>
+            Key
+            <input id="api-key" type="text" readonly />
+          </label>
+        </div>
+        <p>
+          <button id="api-key-copy">Copy</button>
+          <button id="api-key-regenerate" class="danger">Regenerate</button>
+          <span id="api-key-status" class="result"></span>
+        </p>
+
+        <h3>Authentication required</h3>
+        <p class="hint">
+          Disabling this leaves Pickarr open to anyone who can reach the port,
+          exactly like turning off authentication in Sonarr/Radarr. The login
+          page stays available.
+        </p>
+        <p>
+          <label class="inline"><input id="auth-required" type="checkbox" /> Enabled</label>
+          <span id="auth-required-status" class="result"></span>
+        </p>
+      </section>
+
+      <!-- ---------------------------------------------------------- -->
+      <section id="tab-history" class="tab">
+        <h2>History</h2>
+        <p>
+          <button id="reload-history">Reload</button>
+        </p>
+        <div id="history-list">Loading…</div>
+      </section>
+
+      <!-- ---------------------------------------------------------- -->
+      <section id="tab-logs" class="tab">
+        <h2>Logs</h2>
+        <p><button id="reload-logs">Reload</button></p>
+        <pre id="logs-output">Loading…</pre>
+      </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

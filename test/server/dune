@@ -1,0 +1,4 @@
+(test
+ (name test_server)
+ (package selectarr)
+ (libraries selectarr_core selectarr_server alcotest yojson lwt lwt.unix unix))

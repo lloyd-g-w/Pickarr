@@ -714,6 +714,94 @@ let test_seerr_compact_request () =
   | _ -> Alcotest.fail "compact request must be an object"
 
 (* ------------------------------------------------------------------ *)
+(* Working a request like the Select page                              *)
+(* ------------------------------------------------------------------ *)
+
+let select_body ?grab_query json =
+  Seerr_sync.select_body_of_json ?grab_query (Yojson.Safe.from_string json)
+
+let test_seerr_select_body () =
+  (match select_body "{}" with
+  | Error e -> Alcotest.failf "an empty body must parse: %s" e
+  | Ok b ->
+      Alcotest.(check bool) "no grab by default" false b.sb_options.Selection.grab;
+      Alcotest.(check bool) "no approval by default" false b.sb_approve;
+      Alcotest.(check (option int)) "no season" None b.sb_season_number;
+      Alcotest.(check (option string)) "no instance" None b.sb_instance_id;
+      Alcotest.(check (option string)) "no instruction" None b.sb_options.Selection.instruction);
+  (match
+     select_body
+       {|{"grab":true,"approve":true,"use_ai":false,"season_number":2,
+          "instance_id":" sonarr ","instruction":"  prefer x265  "}|}
+   with
+  | Error e -> Alcotest.failf "a full body must parse: %s" e
+  | Ok b ->
+      Alcotest.(check bool) "grab" true b.sb_options.Selection.grab;
+      Alcotest.(check bool) "approve" true b.sb_approve;
+      Alcotest.(check (option bool)) "ai overridden" (Some false) b.sb_options.Selection.use_ai;
+      Alcotest.(check (option int)) "season" (Some 2) b.sb_season_number;
+      Alcotest.(check (option string)) "instance is trimmed" (Some "sonarr") b.sb_instance_id;
+      Alcotest.(check (option string)) "instruction is trimmed" (Some "prefer x265")
+        b.sb_options.Selection.instruction);
+  (* Specials are a real season; strings are accepted because the UI sends
+     form values. *)
+  (match select_body {|{"season_number":0}|} with
+  | Ok b -> Alcotest.(check (option int)) "season 0" (Some 0) b.sb_season_number
+  | Error e -> Alcotest.failf "season 0 must parse: %s" e);
+  (match select_body {|{"season_number":"3","approve":"yes"}|} with
+  | Ok b ->
+      Alcotest.(check (option int)) "numeric string season" (Some 3) b.sb_season_number;
+      Alcotest.(check bool) "boolean string approve" true b.sb_approve
+  | Error e -> Alcotest.failf "string values must parse: %s" e);
+  (* Explicit nulls mean "not given", not an error. *)
+  (match select_body {|{"season_number":null,"instance_id":null,"approve":null}|} with
+  | Ok b ->
+      Alcotest.(check (option int)) "null season" None b.sb_season_number;
+      Alcotest.(check (option string)) "null instance" None b.sb_instance_id;
+      Alcotest.(check bool) "null approve" false b.sb_approve
+  | Error e -> Alcotest.failf "nulls must parse: %s" e);
+  (* The query override the Select page uses works here too. *)
+  (match select_body ~grab_query:"true" "{}" with
+  | Ok b -> Alcotest.(check bool) "?grab=true" true b.sb_options.Selection.grab
+  | Error e -> Alcotest.failf "grab query must parse: %s" e);
+  let bad json =
+    Alcotest.(check bool)
+      (Printf.sprintf "%s is rejected" json)
+      true
+      (Result.is_error (select_body json))
+  in
+  bad {|{"season_number":-1}|};
+  bad {|{"season_number":"nonsense"}|};
+  bad {|{"season_number":[2]}|};
+  bad {|{"instance_id":7}|};
+  bad {|{"approve":"maybe"}|};
+  bad {|{"grab":"maybe"}|}
+
+let test_seerr_pending_decision () =
+  Alcotest.(check bool) "an approved request is worked on" true
+    (Seerr_sync.pending_decision ~status:Seerr.status_approved ~approve:false = `Proceed);
+  Alcotest.(check bool) "approval is not repeated" true
+    (Seerr_sync.pending_decision ~status:Seerr.status_approved ~approve:true = `Proceed);
+  Alcotest.(check bool) "a pending request is approved first when asked" true
+    (Seerr_sync.pending_decision ~status:Seerr.status_pending ~approve:true = `Approve_first);
+  match Seerr_sync.pending_decision ~status:Seerr.status_pending ~approve:false with
+  | `Needs_approval message ->
+      Alcotest.(check bool) "the refusal says what to do" true
+        (contains ~needle:"approve" message)
+  | _ -> Alcotest.fail "a pending request must not be selected without approval"
+
+let test_seerr_nothing_reason () =
+  Alcotest.(check bool) "pending is explained as pending" true
+    (contains ~needle:"pending approval"
+       (Seerr_sync.nothing_reason ~pushed:false ~pending:true Types.Radarr));
+  Alcotest.(check bool) "an unpushed request blames Seerr" true
+    (contains ~needle:"has not pushed"
+       (Seerr_sync.nothing_reason ~pushed:false ~pending:false Types.Sonarr));
+  Alcotest.(check bool) "a pushed request blames the library" true
+    (contains ~needle:"monitored, missing"
+       (Seerr_sync.nothing_reason ~pushed:true ~pending:false Types.Radarr))
+
+(* ------------------------------------------------------------------ *)
 (* Fulfilment: request -> target -> selections                          *)
 (* ------------------------------------------------------------------ *)
 
@@ -1073,6 +1161,9 @@ let () =
           Alcotest.test_case "plan" `Quick test_seerr_plan;
           Alcotest.test_case "configuration gate" `Quick test_seerr_configured;
           Alcotest.test_case "compact request" `Quick test_seerr_compact_request;
+          Alcotest.test_case "select body" `Quick test_seerr_select_body;
+          Alcotest.test_case "pending decision" `Quick test_seerr_pending_decision;
+          Alcotest.test_case "nothing reason" `Quick test_seerr_nothing_reason;
         ] );
       ( "fulfil",
         [

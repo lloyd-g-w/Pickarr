@@ -179,6 +179,36 @@ Approving from the Requests tab approves in Seerr **and** starts the selection
 immediately; *Fulfil now* re-runs the selection for an already approved
 request.
 
+### Working a request by hand
+
+The poller decides on its own. When you want to look first, every request row
+also has **Preview** and **Select & grab**, which open the request in a panel
+that works exactly like the [Select page](#manual-selection):
+
+1. Pickarr resolves the request against your instances *without searching* —
+   the movie id for a Radarr request, or the series id and the requested
+   seasons (with how many episodes each is missing) for a Sonarr one. A
+   request Seerr has not pushed to the *arr yet says so instead.
+2. **Preview** runs the full pipeline and shows the ranked candidates, the
+   rejected releases with their reasons, the explanation and the AI decision.
+   Nothing is grabbed.
+3. You can add an **instruction for this selection** ("pick the highest
+   quality regardless of size") and toggle **Use AI** for that run only.
+   Neither is saved.
+4. **Select & grab** takes the winner; the **Grab** button on any candidate
+   row takes that release instead. Hard-rejected releases are still refused.
+5. For a TV request each requested season has its own *Preview* and
+   *Select & grab*, so one season can be worked on its own; running the whole
+   request covers every requested season under the usual pack policy.
+
+A request that is still pending shows **Approve & select**: it approves in
+Seerr first, waits for Seerr to push the item to Sonarr/Radarr, and then
+selects. Selecting a pending request without approving it is refused
+(HTTP 409) — Pickarr never approves anything implicitly.
+
+Only an actual grab starts the six-hour cooldown, so previewing a request as
+often as you like does not stop the poller from working on it.
+
 Note on Seerr's own "search on add": in sidecar mode you disable automatic
 search on your indexers (see [automatic mode](#automatic-mode)), so Sonarr and
 Radarr will not grab anything by themselves when Seerr adds the item —
@@ -499,6 +529,8 @@ LLM fails, and 500 for anything unexpected.
 | POST | `/api/select/sonarr/series/:series_id` | Select a whole series, season by season |
 | POST | `/api/select/:instance_id/season/:series_id/:season_number` | Season pack on a specific instance |
 | POST | `/api/select/:instance_id/series/:series_id` | Whole series on a specific instance |
+| POST | `/api/grab/:instance_id/:media_id` | Grab one named candidate (`{"release_id": "..."}`), re-searching first |
+| POST | `/api/grab/:instance_id/season/:series_id/:season_number` | Grab one named season pack |
 | GET | `/api/series/:instance_id/:series_id` | Series and per-season missing/total counts |
 | GET | `/api/wanted/:instance_id` | Wanted items (`?kind=missing\|cutoff`) |
 | GET | `/api/history` | Recent selections (`?limit=`) |
@@ -514,7 +546,9 @@ LLM fails, and 500 for anything unexpected.
 | GET | `/api/seerr/requests` | Requests (`?filter=pending\|processing\|approved\|available\|failed\|all`, `?take=`) |
 | POST | `/api/seerr/requests/:id/approve` | Approve in Seerr and fulfil immediately |
 | POST | `/api/seerr/requests/:id/decline` | Decline in Seerr |
-| POST | `/api/seerr/requests/:id/fulfil` | Run a selection for that request now |
+| POST | `/api/seerr/requests/:id/fulfil` | Run a selection for that request now (in the background) |
+| POST | `/api/seerr/requests/:id/resolve` | What the request maps to in Sonarr/Radarr, without searching |
+| POST | `/api/seerr/requests/:id/select` | Run the pipeline for the request and answer like `/api/select` (`{grab?, instruction?, use_ai?, instance_id?, season_number?, approve?}`) |
 | POST | `/api/seerr/run` | Run a Seerr pass now |
 
 Requests below assume no authentication; add `-H 'X-Api-Key: <key>'` when an

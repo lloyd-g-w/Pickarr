@@ -701,3 +701,432 @@ let start (state : App_state.t) =
       Lwt.catch loop (fun exn ->
           Log_buffer.errorf "seerr: poller stopped: %s" (Printexc.to_string exn);
           Lwt.return_unit))
+
+(* ------------------------------------------------------------------ *)
+(* Working one request like the Select page                            *)
+(* ------------------------------------------------------------------ *)
+
+(* The Requests tab does not just fulfil a request in the background: it
+   previews the ranked candidates, lets the user pass a one-off instruction,
+   and grabs the winner or any other candidate — exactly like the Select page.
+   Those two routes (resolve, select) are what it drives. *)
+
+(** Why a request action could not be carried out.  The routes turn these
+    into status codes; keeping them here means the rules are testable without
+    a Dream request. *)
+type request_error =
+  | Req_unconfigured of string  (** 409: no usable Seerr connection *)
+  | Req_bad_request of string  (** 400 *)
+  | Req_not_found of string  (** 404: no such request or instance *)
+  | Req_pending of string
+      (** 409: the request still needs approval and none was asked for *)
+  | Req_nothing of string
+      (** 409: nothing to select (not pushed to the *arr, or already there) *)
+  | Req_upstream of string  (** 502: Seerr or the *arr failed *)
+
+let request_error_message = function
+  | Req_unconfigured m | Req_bad_request m | Req_not_found m | Req_pending m
+  | Req_nothing m | Req_upstream m ->
+      m
+
+(** The body of [POST /api/seerr/requests/:id/select]: the usual selection
+    options plus which instance and season to work on, and whether a pending
+    request may be approved first.  Pure. *)
+type select_body = {
+  sb_options : Selection.options;
+  sb_instance_id : string option;
+      (** Which configured instance to use; the poller's choice when absent. *)
+  sb_season_number : int option;
+      (** One season of a TV request; every requested season when absent. *)
+  sb_approve : bool;  (** Approve first when the request is still pending. *)
+}
+
+let select_body_of_json ?(grab_query : string option) (body : Yojson.Safe.t) :
+    (select_body, string) result =
+  match Selection.options_of_json ?grab_query body with
+  | Error e -> Error e
+  | Ok options -> (
+      let field key =
+        match body with `Assoc fields -> List.assoc_opt key fields | _ -> None
+      in
+      let instance_id =
+        match field "instance_id" with
+        | Some (`String s) when String.trim s <> "" -> Ok (Some (String.trim s))
+        | None | Some `Null | Some (`String _) -> Ok None
+        | Some _ -> Error "\"instance_id\" must be a string"
+      in
+      let season_number =
+        match field "season_number" with
+        | None | Some `Null -> Ok None
+        | Some (`Int n) when n >= 0 -> Ok (Some n)
+        | Some (`String s) -> (
+            match int_of_string_opt (String.trim s) with
+            | Some n when n >= 0 -> Ok (Some n)
+            | _ -> Error "\"season_number\" must be a season number (0 or greater)")
+        | Some _ -> Error "\"season_number\" must be a season number (0 or greater)"
+      in
+      let approve =
+        match field "approve" with
+        | None | Some `Null -> Ok false
+        | Some (`Bool b) -> Ok b
+        | Some (`String s) -> (
+            match String.lowercase_ascii (String.trim s) with
+            | "1" | "true" | "yes" | "on" -> Ok true
+            | "0" | "false" | "no" | "off" -> Ok false
+            | _ -> Error "\"approve\" must be a boolean")
+        | Some _ -> Error "\"approve\" must be a boolean"
+      in
+      match (instance_id, season_number, approve) with
+      | Error e, _, _ | _, Error e, _ | _, _, Error e -> Error e
+      | Ok instance_id, Ok season_number, Ok approve ->
+          Ok
+            {
+              sb_options = options;
+              sb_instance_id = instance_id;
+              sb_season_number = season_number;
+              sb_approve = approve;
+            })
+
+(** What a request's status means for a selection: work on it, or ask the
+    user to approve it first.  Pure. *)
+let pending_decision ~(status : int) ~(approve : bool) :
+    [ `Proceed | `Approve_first | `Needs_approval of string ] =
+  if status <> Seerr.status_pending then `Proceed
+  else if approve then `Approve_first
+  else
+    `Needs_approval
+      "request is pending approval; approve it first (or send {\"approve\": true})"
+
+(** Explain an empty resolution, so the Requests tab can say why there is
+    nothing to select yet rather than showing an empty table.  Pure. *)
+let nothing_reason ~(pushed : bool) ~(pending : bool) (app : Types.app) : string =
+  if pending then
+    Printf.sprintf "the request is still pending approval, so %s has not added it yet"
+      (Types.app_to_string app)
+  else if not pushed then
+    Printf.sprintf "Seerr has not pushed this to %s yet" (Types.app_to_string app)
+  else
+    Printf.sprintf
+      "%s has no monitored, missing item for this request (already downloaded, or not monitored)"
+      (Types.app_to_string app)
+
+(* The instances a request would be fulfilled on, in the poller's order. *)
+let candidate_instances (cfg : Config.t) (r : Seerr.request) : Config.instance list =
+  match app_of_media_type r.rq_type with
+  | None -> []
+  | Some app ->
+      List.filter (fun (i : Config.instance) -> i.inst_enabled && i.inst_app = app) cfg.instances
+      |> choose_instances ~is4k:r.rq_is4k
+
+(* Read the request, mapping Seerr's failures onto request_error. *)
+let fetch_request (s : Config.seerr) (request_id : int) :
+    (Seerr.request, request_error) result Lwt.t =
+  let* r = Seerr.request_by_id ~base_url:s.seerr_url ~api_key:s.seerr_api_key request_id in
+  match r with
+  | Ok r -> Lwt.return (Ok r)
+  | Error (Pickarr_arr.Http.Http_status (404, _)) ->
+      Lwt.return (Error (Req_not_found (Printf.sprintf "no Seerr request #%d" request_id)))
+  | Error e -> Lwt.return (Error (Req_upstream (Pickarr_arr.Http.error_to_string e)))
+
+(* The season detail the UI shows next to a Series target: how much of each
+   resolved season is missing. *)
+let season_rows (state : App_state.t) (inst : Config.instance) ~(series_id : int)
+    ~(seasons : int list) : Yojson.Safe.t list Lwt.t =
+  let client = App_state.client state inst in
+  let* overview = Client.fetch_series_overview client series_id in
+  match overview with
+  | Error _ -> Lwt.return (List.map (fun n -> `Assoc [ ("season_number", `Int n) ]) seasons)
+  | Ok (_series, summaries) ->
+      Lwt.return
+        (List.filter_map
+           (fun (s : Client.season_summary) ->
+             if List.mem s.season_number seasons then
+               Some
+                 (`Assoc
+                   [
+                     ("season_number", `Int s.season_number);
+                     ("missing", `Int (List.length s.missing_episode_ids));
+                     ("total", `Int s.total_episodes);
+                     ("monitored", `Bool s.monitored);
+                   ])
+             else None)
+           summaries)
+
+let target_to_yojson (state : App_state.t) (inst : Config.instance) ~(reason : string)
+    (target : Fulfil.target) : Yojson.Safe.t Lwt.t =
+  let common extra =
+    `Assoc
+      ([
+         ("instance_id", `String inst.inst_id);
+         ("instance_name", `String inst.inst_name);
+         ("app", `String (Types.app_to_string inst.inst_app));
+       ]
+      @ extra)
+  in
+  match target with
+  | Movies [] | Nothing -> Lwt.return (common [ ("kind", `String "nothing"); ("reason", `String reason) ])
+  | Movies (id :: rest) ->
+      Lwt.return
+        (common
+           [
+             ("kind", `String "movie");
+             ("media_id", `Int id);
+             ("media_ids", `List (List.map (fun i -> `Int i) (id :: rest)));
+           ])
+  | Episodes ids ->
+      Lwt.return
+        (common
+           [
+             ("kind", `String "episodes");
+             ("media_ids", `List (List.map (fun i -> `Int i) ids));
+           ])
+  | Series { series_id; seasons } ->
+      let* rows = season_rows state inst ~series_id ~seasons in
+      Lwt.return
+        (common
+           [
+             ("kind", `String "series");
+             ("series_id", `Int series_id);
+             ("seasons", `List rows);
+           ])
+
+(** Resolve a request onto the configured instances without running any
+    search: what the Requests tab shows before the user previews anything. *)
+let resolve_request (state : App_state.t) ~(request_id : int) :
+    (Yojson.Safe.t, request_error) result Lwt.t =
+  let cfg = App_state.config state in
+  let s = cfg.seerr in
+  if not (configured s) then Lwt.return (Error (Req_unconfigured (unconfigured_reason s)))
+  else
+    let* r = fetch_request s request_id in
+    match r with
+    | Error e -> Lwt.return (Error e)
+    | Ok r -> (
+        let cache = title_cache () in
+        let* title = title_of_request s cache r in
+        let compact = request_to_compact ?title r in
+        match app_of_media_type r.rq_type with
+        | None ->
+            Lwt.return
+              (Ok
+                 (`Assoc
+                   [
+                     ("request", compact);
+                     ("targets", `List []);
+                     ( "detail",
+                       `String
+                         ("unsupported request type "
+                        ^ Option.value r.rq_type ~default:"(none)") );
+                   ]))
+        | Some app -> (
+            let pending = r.rq_status = Seerr.status_pending in
+            match candidate_instances cfg r with
+            | [] ->
+                Lwt.return
+                  (Ok
+                     (`Assoc
+                       [
+                         ("request", compact);
+                         ("targets", `List []);
+                         ( "detail",
+                           `String
+                             (Printf.sprintf "no enabled %s instance is configured"
+                                (Types.app_to_string app)) );
+                       ]))
+            | instances ->
+                let reason = nothing_reason ~pushed:(pushed_to_arr r) ~pending app in
+                let* targets =
+                  Lwt_list.map_s
+                    (fun inst ->
+                      let* target = resolve_on_instance state r inst in
+                      target_to_yojson state inst ~reason target)
+                    instances
+                in
+                Lwt.return (Ok (`Assoc [ ("request", compact); ("targets", `List targets) ]))))
+
+(* Delays used while waiting for Seerr to push a just-approved request into
+   Sonarr/Radarr. Capped so the HTTP call cannot hang for minutes. *)
+let approve_wait_delays = [ 0.; 10.; 20.; 30.; 30. ]
+
+(* Resolve, retrying while [delays] remain: only used right after an approval,
+   because Seerr pushes to the *arr asynchronously. *)
+let rec resolve_with_retry state (r : Seerr.request) (inst : Config.instance) delays :
+    Fulfil.target Lwt.t =
+  let* target = resolve_on_instance state r inst in
+  if Fulfil.target_items target > 0 then Lwt.return target
+  else
+    match delays with
+    | [] -> Lwt.return target
+    | delay :: rest ->
+        Log_buffer.infof "seerr: request #%d is not in %s yet; retrying in %.0fs" r.rq_id
+          inst.inst_name delay;
+        let* () = Lwt_unix.sleep delay in
+        resolve_with_retry state r inst rest
+
+let grabbed_in_selection (r : Types.selection_result) = if r.grabbed then 1 else 0
+
+let grabbed_in_series (sr : Selection.series_result) =
+  List.fold_left
+    (fun acc (o : Selection.season_outcome) ->
+      match o.outcome with
+      | `Pack r -> acc + grabbed_in_selection r
+      | `Episodes rs -> acc + List.fold_left (fun a r -> a + grabbed_in_selection r) 0 rs
+      | `Skipped _ -> acc)
+    0 sr.seasons
+
+(** Run a selection for one Seerr request, the way the Select page runs one
+    for a media id: the same pipeline, the same result payload, and the same
+    optional grab.  A pending request is refused unless [sb_approve] is set,
+    in which case it is approved first and the *arr is given a moment to add
+    the item. *)
+let select_for_request (state : App_state.t) ~(request_id : int) (body : select_body) :
+    (Yojson.Safe.t, request_error) result Lwt.t =
+  let cfg = App_state.config state in
+  let s = cfg.seerr in
+  if not (configured s) then Lwt.return (Error (Req_unconfigured (unconfigured_reason s)))
+  else
+    let* fetched = fetch_request s request_id in
+    match fetched with
+    | Error e -> Lwt.return (Error e)
+    | Ok r -> (
+        (* 1. approval *)
+        let* approved =
+          match pending_decision ~status:r.rq_status ~approve:body.sb_approve with
+          | `Needs_approval m -> Lwt.return (Error (Req_pending m))
+          | `Proceed -> Lwt.return (Ok (r, false))
+          | `Approve_first -> (
+              let* updated =
+                Seerr.approve ~base_url:s.seerr_url ~api_key:s.seerr_api_key request_id
+              in
+              match updated with
+              | Error e -> Lwt.return (Error (Req_upstream (Pickarr_arr.Http.error_to_string e)))
+              | Ok updated ->
+                  Log_buffer.infof "seerr: approved request #%d before selecting" request_id;
+                  Lwt.return (Ok (updated, true)))
+        in
+        match approved with
+        | Error e -> Lwt.return (Error e)
+        | Ok (r, just_approved) -> (
+            let cache = title_cache () in
+            let* title = title_of_request s cache r in
+            let compact = request_to_compact ?title r in
+            match app_of_media_type r.rq_type with
+            | None ->
+                Lwt.return
+                  (Error
+                     (Req_bad_request
+                        ("unsupported request type " ^ Option.value r.rq_type ~default:"(none)")))
+            | Some app -> (
+                (* 2. instance *)
+                let instances = candidate_instances cfg r in
+                let chosen =
+                  match body.sb_instance_id with
+                  | None -> (
+                      match instances with [] -> Error `None_configured | i :: _ -> Ok i)
+                  | Some id -> (
+                      match App_state.find_instance state id with
+                      | None -> Error (`Unknown id)
+                      | Some i when not i.inst_enabled -> Error (`Disabled id)
+                      | Some i when i.inst_app <> app -> Error (`Wrong_app i)
+                      | Some i -> Ok i)
+                in
+                match chosen with
+                | Error `None_configured ->
+                    Lwt.return
+                      (Error
+                         (Req_nothing
+                            (Printf.sprintf "no enabled %s instance is configured"
+                               (Types.app_to_string app))))
+                | Error (`Unknown id) ->
+                    Lwt.return
+                      (Error (Req_not_found (Printf.sprintf "no instance \"%s\" is configured" id)))
+                | Error (`Disabled id) ->
+                    Lwt.return
+                      (Error (Req_bad_request (Printf.sprintf "instance \"%s\" is disabled" id)))
+                | Error (`Wrong_app i) ->
+                    Lwt.return
+                      (Error
+                         (Req_bad_request
+                            (Printf.sprintf "%s is a %s instance, but this is a %s request"
+                               i.inst_name
+                               (Types.app_to_string i.inst_app)
+                               (Types.app_to_string app))))
+                | Ok inst -> (
+                    (* 3. resolve, waiting only when the approval is fresh *)
+                    let* target =
+                      if just_approved then resolve_with_retry state r inst approve_wait_delays
+                      else resolve_on_instance state r inst
+                    in
+                    let opts = body.sb_options in
+                    let respond kind payload grabbed =
+                      (* Only a grab starts the cooldown: previewing a request
+                         must not stop the poller from working on it. *)
+                      if grabbed > 0 then record_attempt r.rq_id;
+                      Lwt.return
+                        (Ok
+                           (`Assoc
+                             ([
+                                ("request", compact);
+                                ("instance_id", `String inst.inst_id);
+                                ("instance_name", `String inst.inst_name);
+                                ("app", `String (Types.app_to_string inst.inst_app));
+                                ("kind", `String kind);
+                                ("grabbed", `Int grabbed);
+                              ]
+                             @ payload)))
+                    in
+                    let selection_payload result =
+                      [ ("selection", Types.selection_result_to_yojson result) ]
+                    in
+                    let of_selection kind result =
+                      respond kind (selection_payload result) (grabbed_in_selection result)
+                    in
+                    let fail e = Lwt.return (Error (Req_upstream (Selection.error_to_string e))) in
+                    let count = List.fold_left (fun a r -> a + grabbed_in_selection r) 0 in
+                    (* Several media ids (a multi-part movie, or the episode
+                       fallback): every one is selected and reported. *)
+                    let run_many kind ids =
+                      let* results =
+                        Lwt_list.map_s (fun id -> Selection.run state inst ~media_id:id opts) ids
+                      in
+                      match (List.filter_map Result.to_option results, results) with
+                      | [], Error e :: _ -> fail e
+                      | [], _ ->
+                          fail (Selection.Arr_error "nothing could be selected for this request")
+                      | ok, _ ->
+                          respond kind
+                            [ ("selections", `List (List.map Types.selection_result_to_yojson ok)) ]
+                            (count ok)
+                    in
+                    match target with
+                    | Fulfil.Nothing | Fulfil.Movies [] ->
+                        Lwt.return
+                          (Error
+                             (Req_nothing
+                                (nothing_reason ~pushed:(pushed_to_arr r)
+                                   ~pending:(r.rq_status = Seerr.status_pending)
+                                   app)))
+                    | Fulfil.Movies [ id ] -> (
+                        let* result = Selection.run state inst ~media_id:id opts in
+                        match result with Error e -> fail e | Ok result -> of_selection "movie" result)
+                    | Fulfil.Movies ids -> run_many "movies" ids
+                    | Fulfil.Episodes ids -> run_many "episodes" ids
+                    | Fulfil.Series { series_id; seasons } -> (
+                        match body.sb_season_number with
+                        | Some season_number -> (
+                            let* result =
+                              Selection.run_season state inst ~series_id ~season_number opts
+                            in
+                            match result with
+                            | Error e -> fail e
+                            | Ok result -> of_selection "season" result)
+                        | None -> (
+                            let* result =
+                              Selection.run_series state inst ~series_id ~seasons opts
+                            in
+                            match result with
+                            | Error e -> fail e
+                            | Ok result ->
+                                respond "series"
+                                  [ ("series", Selection.series_result_to_yojson result) ]
+                                  (grabbed_in_series result)))))))

@@ -208,11 +208,86 @@ let run ?grab_allowed (state : App_state.t) (inst : Config.instance) ~(media_id 
 
     Only releases that survive the hard rules can be grabbed: the deterministic
     rejections outrank any manual pick, exactly as in the automatic path. *)
-let grab_release (state : App_state.t) (inst : Config.instance) ~(media_id : int)
-    ~(release_id : string) : (Types.selection_result, error) result Lwt.t =
+let grab_release_media (state : App_state.t) (inst : Config.instance)
+    (media : Types.media) ~(release_id : string) :
+    (Types.selection_result, error) result Lwt.t =
   let cfg = App_state.config state in
   let client = App_state.client state inst in
-  let ( let* ) = Lwt.bind in
+  let* releases = Client.search_releases client media in
+  match releases with
+  | Error e ->
+      Lwt.return
+        (Error
+           (Arr_error
+              (Printf.sprintf "%s: release search failed for %s: %s" inst.inst_name
+                 (Store.media_label media) (Client.error_to_string e))))
+  | Ok releases -> (
+      (* The pipeline gives the same candidate/rejected split the UI
+         showed, so the manual pick is validated against it. *)
+      let* result =
+        Pipeline.run ~config:cfg ~instance:(Some inst) ~media ~releases ~use_ai:false ()
+      in
+      let matches (s : Types.scored_release) = s.Types.scored.Types.id = release_id in
+      match List.find_opt matches result.Types.candidates with
+      | None -> (
+          let rejected =
+            List.find_opt
+              (fun (r : Types.rejected_release) ->
+                r.Types.release.Types.id = release_id)
+              result.Types.rejected
+          in
+          match rejected with
+          | Some r ->
+              let reasons =
+                String.concat "; "
+                  (List.map (fun (x : Types.rejection) -> x.Types.message) r.Types.reasons)
+              in
+              Lwt.return
+                (Error
+                   (Release_rejected
+                      (Printf.sprintf "%s cannot be grabbed: %s" r.Types.release.Types.title
+                         reasons)))
+          | None ->
+              Lwt.return
+                (Error
+                   (Release_not_found
+                      (Printf.sprintf
+                         "%s: no release with id \"%s\" is currently offered for %s \
+                          (search again and retry)"
+                         inst.inst_name release_id (Store.media_label media)))))
+      | Some chosen ->
+          let* grabbed = Client.grab client media chosen.Types.scored in
+          let result =
+            {
+              result with
+              Types.selected = Some chosen;
+              reason =
+                Printf.sprintf "%s was grabbed because you picked it directly"
+                  chosen.Types.scored.Types.title;
+            }
+          in
+          let result =
+            match grabbed with
+            | Ok () ->
+                Log_buffer.infof "%s: grabbed %s for %s (picked by hand)" inst.inst_name
+                  chosen.Types.scored.Types.title (Store.media_label media);
+                { result with Types.grabbed = true; grab_error = None }
+            | Error e ->
+                let msg = Client.error_to_string e in
+                Log_buffer.errorf "%s: grab failed for %s: %s" inst.inst_name
+                  chosen.Types.scored.Types.title msg;
+                { result with Types.grabbed = false; grab_error = Some msg }
+          in
+          let* () =
+            Store.append_history state.store
+              (Store.history_entry_of_result ~instance_id:inst.inst_id result)
+          in
+          Lwt.return (Ok result))
+
+(** Grab one specific release for a Sonarr episode or Radarr movie. *)
+let grab_release (state : App_state.t) (inst : Config.instance) ~(media_id : int)
+    ~(release_id : string) : (Types.selection_result, error) result Lwt.t =
+  let client = App_state.client state inst in
   let* media = Client.fetch_media client media_id in
   match media with
   | Error e ->
@@ -220,84 +295,8 @@ let grab_release (state : App_state.t) (inst : Config.instance) ~(media_id : int
         Printf.sprintf "%s: could not load media %d: %s" inst.inst_name media_id
           (Client.error_to_string e)
       in
-      Lwt.return
-        (Error
-           (match e with
-           | Pickarr_arr.Http.Http_status (404, _) -> Media_not_found msg
-           | Pickarr_arr.Http.Http_status _ | Pickarr_arr.Http.Connection _
-           | Pickarr_arr.Http.Json _ ->
-               Arr_error msg))
-  | Ok media -> (
-      let* releases = Client.search_releases client media in
-      match releases with
-      | Error e ->
-          Lwt.return
-            (Error
-               (Arr_error
-                  (Printf.sprintf "%s: release search failed for %s: %s" inst.inst_name
-                     (Store.media_label media) (Client.error_to_string e))))
-      | Ok releases -> (
-          (* The pipeline gives the same candidate/rejected split the UI
-             showed, so the manual pick is validated against it. *)
-          let* result =
-            Pipeline.run ~config:cfg ~instance:(Some inst) ~media ~releases ~use_ai:false ()
-          in
-          let matches (s : Types.scored_release) = s.Types.scored.Types.id = release_id in
-          match List.find_opt matches result.Types.candidates with
-          | None -> (
-              let rejected =
-                List.find_opt
-                  (fun (r : Types.rejected_release) ->
-                    r.Types.release.Types.id = release_id)
-                  result.Types.rejected
-              in
-              match rejected with
-              | Some r ->
-                  let reasons =
-                    String.concat "; "
-                      (List.map (fun (x : Types.rejection) -> x.Types.message) r.Types.reasons)
-                  in
-                  Lwt.return
-                    (Error
-                       (Release_rejected
-                          (Printf.sprintf "%s cannot be grabbed: %s" r.Types.release.Types.title
-                             reasons)))
-              | None ->
-                  Lwt.return
-                    (Error
-                       (Release_not_found
-                          (Printf.sprintf
-                             "%s: no release with id \"%s\" is currently offered for %s \
-                              (search again and retry)"
-                             inst.inst_name release_id (Store.media_label media)))))
-          | Some chosen ->
-              let* grabbed = Client.grab client media chosen.Types.scored in
-              let result =
-                {
-                  result with
-                  Types.selected = Some chosen;
-                  reason =
-                    Printf.sprintf "%s was grabbed because you picked it directly"
-                      chosen.Types.scored.Types.title;
-                }
-              in
-              let result =
-                match grabbed with
-                | Ok () ->
-                    Log_buffer.infof "%s: grabbed %s for %s (picked by hand)" inst.inst_name
-                      chosen.Types.scored.Types.title (Store.media_label media);
-                    { result with Types.grabbed = true; grab_error = None }
-                | Error e ->
-                    let msg = Client.error_to_string e in
-                    Log_buffer.errorf "%s: grab failed for %s: %s" inst.inst_name
-                      chosen.Types.scored.Types.title msg;
-                    { result with Types.grabbed = false; grab_error = Some msg }
-              in
-              let* () =
-                Store.append_history state.store
-                  (Store.history_entry_of_result ~instance_id:inst.inst_id result)
-              in
-              Lwt.return (Ok result)))
+      Lwt.return (Error (arr_error_of_http ~msg e))
+  | Ok media -> grab_release_media state inst media ~release_id
 
 (** Resolve an instance by id and grab one specific release. *)
 let grab_release_on_instance_id (state : App_state.t) ~(instance_id : string)
@@ -413,6 +412,34 @@ let run_season ?grab_allowed (state : App_state.t) (inst : Config.instance)
       in
       Lwt.return (Error (arr_error_of_http ~msg e))
   | Ok media -> run_media ?grab_allowed state inst media opts
+
+(** Grab one specific season pack, the season equivalent of {!grab_release}.
+
+    The pack search is re-run first (Sonarr only accepts a grab for a release
+    from the last search) and the release id is matched against the result.
+    Releases that are not a pack for this season, and releases a hard rule
+    rejected, are refused: a manual pick never overrides the deterministic
+    rejections. *)
+let grab_release_season (state : App_state.t) (inst : Config.instance)
+    ~(series_id : int) ~(season_number : int) ~(release_id : string) :
+    (Types.selection_result, error) result Lwt.t =
+  let client = App_state.client state inst in
+  let* media = Client.season_media client ~series_id ~season_number in
+  match media with
+  | Error e ->
+      let msg =
+        Printf.sprintf "%s: could not load series %d season %d: %s" inst.inst_name
+          series_id season_number (Client.error_to_string e)
+      in
+      Lwt.return (Error (arr_error_of_http ~msg e))
+  | Ok media -> grab_release_media state inst media ~release_id
+
+(** Resolve an instance by id, then {!grab_release_season}. *)
+let grab_release_season_on_instance_id (state : App_state.t) ~(instance_id : string)
+    ~(series_id : int) ~(season_number : int) ~(release_id : string) =
+  match App_state.find_instance state instance_id with
+  | None -> Lwt.return (Error (Instance_not_found instance_id))
+  | Some inst -> grab_release_season state inst ~series_id ~season_number ~release_id
 
 (* Episode ids the overview reported as monitored and missing. *)
 let missing_ids_of_media (media : Types.media) : int list =

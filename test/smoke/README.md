@@ -78,11 +78,30 @@ per-episode search was needed, exactly one grab with a
 `{guid, indexerId, seriesId}` body, and that the pass summary and
 `/api/seerr/status` carry the per-season outcome the Requests tab shows.
 
+## Seerr: working a request like the Select page
+
+```bash
+bash test/smoke/seerr_ux_e2e.sh
+```
+
+Asserts the two routes the Requests tab drives: `resolve` (a movie request
+maps to its Radarr movie id, a TV request to the series id plus the requested
+seasons with missing/total, and neither searches nor grabs), `select` with
+`grab:false` (candidates, `grabbed:false`, no `POST /api/v3/release`), with
+`grab:true` (one grab, correct body), a pending request refused with 409 and
+accepted with `approve:true` (approved in Seerr first), one season selected as
+a pack, the whole request as a series run, the new season grab route, and that
+a non-pack release is refused with 409.
+
 ## UI
 
 ```bash
 # the Select page renders real payloads and awkward shapes without throwing
 node test/smoke/render_selection.js /tmp/grabbug-last-preview-sonarr.json
+
+# the Requests tab's per-request panel renders (uses the payloads
+# seerr_ux_e2e.sh leaves in /tmp, or built-in samples)
+node test/smoke/render_seerr_panel.js
 
 # every element id app.js reaches for exists in index.html
 node test/smoke/check_element_ids.js

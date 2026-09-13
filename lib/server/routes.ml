@@ -456,6 +456,29 @@ let select_series_on_instance (state : App_state.t) request =
       run_series_selection request (fun opts ~seasons ->
           Selection.run_series_on_instance_id state ~instance_id ~series_id ~seasons opts)
 
+(* The season equivalent of [grab_specific_release]: a pack is named by series
+   id and season number, because a season has no media id of its own. *)
+let grab_specific_season_release (state : App_state.t) request =
+  let* body = json_body request in
+  match body with
+  | Error e -> error_json `Bad_Request e
+  | Ok body -> (
+      match
+        ( media_id_param request "series_id",
+          season_number_param request "season_number",
+          Selection.release_id_of_json body )
+      with
+      | Error e, _, _ | _, Error e, _ | _, _, Error e -> error_json `Bad_Request e
+      | Ok series_id, Ok season_number, Ok release_id -> (
+          let instance_id = Dream.param request "instance_id" in
+          let* result =
+            Selection.grab_release_season_on_instance_id state ~instance_id ~series_id
+              ~season_number ~release_id
+          in
+          match result with
+          | Error e -> selection_error_response e
+          | Ok result -> respond_json (Types.selection_result_to_yojson result)))
+
 let get_series_overview (state : App_state.t) request =
   match media_id_param request "series_id" with
   | Error e -> error_json `Bad_Request e
@@ -819,6 +842,48 @@ let seerr_run (state : App_state.t) _request =
   respond_json summary
 
 (* ------------------------------------------------------------------ *)
+(* Working a Seerr request like the Select page                        *)
+(* ------------------------------------------------------------------ *)
+
+let seerr_request_error_response (e : Seerr_sync.request_error) =
+  let message = Seerr_sync.request_error_message e in
+  match e with
+  | Seerr_sync.Req_bad_request _ -> error_json `Bad_Request message
+  | Seerr_sync.Req_not_found _ -> error_json `Not_Found message
+  | Seerr_sync.Req_unconfigured _ | Seerr_sync.Req_pending _ | Seerr_sync.Req_nothing _ ->
+      error_json `Conflict message
+  | Seerr_sync.Req_upstream _ -> error_json `Bad_Gateway message
+
+(* What the request maps to in Sonarr/Radarr, without searching anything: the
+   Requests tab shows this before the user previews a selection. *)
+let seerr_resolve (state : App_state.t) request =
+  match seerr_request_id request with
+  | Error e -> error_json `Bad_Request e
+  | Ok request_id -> (
+      let* result = Seerr_sync.resolve_request state ~request_id in
+      match result with
+      | Ok json -> respond_json json
+      | Error e -> seerr_request_error_response e)
+
+(* Run the pipeline for a request and answer with the same payload the Select
+   page renders, so a request can be previewed and grabbed by hand. *)
+let seerr_select (state : App_state.t) request =
+  match seerr_request_id request with
+  | Error e -> error_json `Bad_Request e
+  | Ok request_id -> (
+      let* body = json_body request in
+      match body with
+      | Error e -> error_json `Bad_Request e
+      | Ok body -> (
+          match Seerr_sync.select_body_of_json ?grab_query:(Dream.query request "grab") body with
+          | Error e -> error_json `Bad_Request e
+          | Ok body -> (
+              let* result = Seerr_sync.select_for_request state ~request_id body in
+              match result with
+              | Ok json -> respond_json json
+              | Error e -> seerr_request_error_response e)))
+
+(* ------------------------------------------------------------------ *)
 (* UI                                                                  *)
 (* ------------------------------------------------------------------ *)
 
@@ -922,6 +987,11 @@ let router (state : App_state.t) =
                      let instance_id = Dream.param request "instance_id" in
                      run_selection request (fun opts ->
                          Selection.run_on_instance_id state ~instance_id ~media_id opts)));
+          (* The season form is registered first: it has more segments, and
+             the literal "season" must not be read as a media id. *)
+          Dream.post "/grab/:instance_id/season/:series_id/:season_number"
+            (guard "POST /api/grab/:instance_id/season/:series_id/:season_number"
+               (grab_specific_season_release state));
           Dream.post "/grab/:instance_id/:media_id"
             (guard "POST /api/grab/:instance_id/:media_id" (grab_specific_release state));
           Dream.get "/history" (guard "GET /api/history" (get_history state));
@@ -944,6 +1014,10 @@ let router (state : App_state.t) =
             (guard "POST /api/seerr/requests/:id/decline" (seerr_decide state ~approve:false));
           Dream.post "/seerr/requests/:id/fulfil"
             (guard "POST /api/seerr/requests/:id/fulfil" (seerr_fulfil state));
+          Dream.post "/seerr/requests/:id/resolve"
+            (guard "POST /api/seerr/requests/:id/resolve" (seerr_resolve state));
+          Dream.post "/seerr/requests/:id/select"
+            (guard "POST /api/seerr/requests/:id/select" (seerr_select state));
           Dream.post "/seerr/run" (guard "POST /api/seerr/run" (seerr_run state));
         ];
     ]

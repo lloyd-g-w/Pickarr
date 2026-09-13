@@ -135,13 +135,17 @@ that already has a file are ignored.
   Pickarr falls back to deterministic scoring. Rejected releases are never
   sent to the model and can never be selected.
 * **Manual and automatic modes**, with a dry-run default for automatic mode.
+* **Season packs and whole series** for Sonarr: fill a season from one pack,
+  or walk a series season by season, with a configurable "how much has to be
+  missing" threshold and a per-episode fallback. See
+  [Seasons and whole series](#seasons-and-whole-series).
 * **A web UI** with no build step and no CDN dependencies (works offline).
 
 ## The selection pipeline
 
 | Stage | What happens |
 | --- | --- |
-| 1. Retrieve | `GET /api/v3/release?episodeId=…` / `?movieId=…`, mapped into an internal `release` type (title, size, seeders, quality, source, codec, audio, HDR/DV, group, languages, custom formats, and Sonarr/Radarr's own rejections) |
+| 1. Retrieve | `GET /api/v3/release?episodeId=…`, `?seriesId=…&seasonNumber=…` (season packs) or `?movieId=…`, mapped into an internal `release` type (title, size, seeders, quality, source, codec, audio, HDR/DV, group, languages, custom formats, and Sonarr/Radarr's own rejections) |
 | 2. Hard filtering | Deterministic OCaml rules. Every rejection carries a structured reason. The LLM never sees rejected releases and can never overturn a rejection |
 | 3. Deterministic scoring | Pure, weighted, unit-tested scoring of the survivors |
 | 4. AI ranking (optional) | The top N candidates plus your preferences go to an OpenAI-compatible `/chat/completions` endpoint, which must answer with strict JSON. The answer is validated (selected id exists, ranking ids exist, no duplicates, scores in range); anything invalid falls back to stage 3 |
@@ -175,6 +179,63 @@ explanation and passed to the AI as advisory `arr_rejections`, and Pickarr
 may grab it (`POST /api/v3/release` does not enforce them). Rejections that
 would make the grab fail anyway — unknown series/movie, unparseable release,
 blocklisted — remain hard regardless.
+
+## Seasons and whole series
+
+Besides a single movie or episode, Pickarr can fill a whole **season** from
+one season pack, or walk a whole **series** season by season. On the *Select*
+page choose *What* → *Season (pack)* or *Whole series*, enter the Sonarr
+series id and press *Load seasons* to see what is missing per season, with
+*Select* / *Select & grab* buttons per row.
+
+A season selection searches `GET /api/v3/release?seriesId=…&seasonNumber=…`.
+That search also returns single episodes, so Pickarr hard-rejects anything
+that is not a pack for the requested season (rule `not_season_pack`) — they
+stay visible in the *rejected* list. The winner is grabbed with
+`POST /api/v3/release` carrying `guid`, `indexerId` and `seriesId`.
+
+### Season-pack policy
+
+*AI & Automatic → Season packs* decides when a pack is used instead of
+individual episodes:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| Prefer season packs | on | off = always select episode by episode |
+| Use a pack when this much of the season is missing (%) | 50 | a pack is only tried when at least this share of the season's monitored episodes is missing, so filling one gap does not re-download the season |
+| Fall back to single episodes | on | when no acceptable pack exists (or the pack grab fails), select the missing episodes individually |
+
+The same policy drives automatic mode: wanted episodes are grouped by season,
+and a season whose missing share reaches the threshold is fetched as one pack
+(counting as one item for *max items per run*, with every missing episode of
+that season entering the cooldown).
+
+A whole-series run answers with one outcome per season:
+
+```bash
+curl -s -X POST http://localhost:8484/api/select/sonarr/series/12 \
+  -H 'Content-Type: application/json' \
+  -d '{"grab": true, "seasons": [2, 3]}'
+```
+
+```json
+{
+  "series": { "title": "Some Show", "media_kind": "series", "media_id": 12 },
+  "seasons": [
+    { "season_number": 2, "missing": 2, "total": 2,
+      "outcome": { "kind": "pack", "selection": { "selected": { "…": "…" } } } },
+    { "season_number": 3, "missing": 1, "total": 10,
+      "outcome": { "kind": "episodes", "selections": [ { "…": "…" } ] } }
+  ],
+  "summary": { "seasons": 2, "selections": 2, "selected": 2, "grabbed": 2 }
+}
+```
+
+Seasons with nothing missing are reported as
+`{"kind": "skipped", "reason": "nothing missing"}`. Omit `seasons` to consider
+every season; specials (season 0) are skipped unless the series has no other
+season. Radarr instances have no seasons, so these endpoints answer 502 for
+them.
 
 ## Natural-language preferences
 
@@ -320,6 +381,11 @@ LLM fails, and 500 for anything unexpected.
 | POST | `/api/select/radarr/movie/:id` | Select for the default Radarr instance |
 | POST | `/api/select/sonarr/episode/:id` | Select for the default Sonarr instance |
 | POST | `/api/select/:instance_id/:media_id` | Select on a specific instance |
+| POST | `/api/select/sonarr/season/:series_id/:season_number` | Select a season pack (default Sonarr instance) |
+| POST | `/api/select/sonarr/series/:series_id` | Select a whole series, season by season |
+| POST | `/api/select/:instance_id/season/:series_id/:season_number` | Season pack on a specific instance |
+| POST | `/api/select/:instance_id/series/:series_id` | Whole series on a specific instance |
+| GET | `/api/series/:instance_id/:series_id` | Series and per-season missing/total counts |
 | GET | `/api/wanted/:instance_id` | Wanted items (`?kind=missing\|cutoff`) |
 | GET | `/api/history` | Recent selections (`?limit=`) |
 | GET | `/api/logs` | Recent log lines |

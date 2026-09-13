@@ -66,9 +66,44 @@
             <select id="select-instance"></select>
           </label>
           <label>
+            What
+            <select id="select-what">
+              <option value="media">Movie / episode</option>
+              <option value="season">Season (pack)</option>
+              <option value="series">Whole series</option>
+            </select>
+          </label>
+        </div>
+
+        <!-- Movie / episode ---------------------------------------- -->
+        <div class="row" id="select-media-row">
+          <label>
             Media id <span class="hint-inline">(movie id for Radarr, episode id for Sonarr)</span>
             <input id="select-media-id" type="number" min="1" placeholder="123" />
           </label>
+        </div>
+
+        <!-- Season / whole series (Sonarr) -------------------------- -->
+        <div id="select-series-block" hidden>
+          <div class="row">
+            <label>
+              Series id <span class="hint-inline">(Sonarr series id)</span>
+              <input id="select-series-id" type="number" min="1" placeholder="12" />
+            </label>
+            <label id="select-season-label">
+              Season number
+              <input id="select-season-number" type="number" min="0" placeholder="2" />
+            </label>
+            <label id="select-seasons-label" hidden>
+              Seasons <span class="hint-inline">optional, comma separated; empty = all</span>
+              <input id="select-seasons" type="text" placeholder="1, 2" />
+            </label>
+          </div>
+          <p>
+            <button id="load-seasons">Load seasons</button>
+            <span id="seasons-status" class="result"></span>
+          </p>
+          <div id="seasons-list"></div>
         </div>
 
         <details>
@@ -207,6 +242,15 @@
           would have been grabbed.
         </p>
         <div id="automatic-form" class="form-grid"></div>
+
+        <h2>Season packs</h2>
+        <p class="hint">
+          When a whole season (or a series) is selected, Pickarr can grab one
+          season pack instead of every episode. A pack is only tried when
+          enough of the season is missing, so filling a single gap does not
+          re-download the rest.
+        </p>
+        <div id="seasons-form" class="form-grid"></div>
 
         <p>
           <button id="save-llm" class="primary">Save AI &amp; automatic settings</button>

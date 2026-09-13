@@ -35,9 +35,10 @@ let known_source = function
   | Some s -> (
       match String.lowercase_ascii s with "unknown" | "" -> None | _ -> Some s)
 
+(* (name, source, resolution, modifier, is_repack, is_proper) *)
 let quality_parts (qm : R.quality_model option) =
   match qm with
-  | None -> (None, None, None, None, None, false, false)
+  | None -> (None, None, None, None, false, false)
   | Some { R.qm_quality; qm_revision } ->
       let name = Option.bind qm_quality (fun q -> q.R.quality_name) in
       let source = Option.bind qm_quality (fun q -> q.R.quality_source) in
@@ -52,7 +53,7 @@ let quality_parts (qm : R.quality_model option) =
       let is_proper =
         match qm_revision with Some r -> r.R.rev_version > 1 | None -> false
       in
-      (name, source, resolution, modifier, None, is_repack, is_proper)
+      (name, source, resolution, modifier, is_repack, is_proper)
 
 let is_remux ~modifier ~parsed_source =
   (match modifier with
@@ -88,7 +89,7 @@ let derive ~title ~api_source ~api_resolution ~api_modifier ~api_group ~api_lang
 
 (** Map a Sonarr [ReleaseResource] onto {!Selectarr_core.Types.release}. *)
 let release_of_sonarr (rr : Sonarr.release_resource) : T.release =
-  let name, api_source, api_resolution, api_modifier, _, is_repack, is_proper =
+  let name, api_source, api_resolution, api_modifier, is_repack, is_proper =
     quality_parts rr.Sonarr.rr_quality
   in
   let parsed, source, modifier, resolution, languages, release_group =
@@ -144,7 +145,7 @@ let release_of_sonarr (rr : Sonarr.release_resource) : T.release =
 
 (** Map a Radarr [ReleaseResource] onto {!Selectarr_core.Types.release}. *)
 let release_of_radarr (rr : Radarr.release_resource) : T.release =
-  let name, api_source, api_resolution, api_modifier, _, is_repack, is_proper =
+  let name, api_source, api_resolution, api_modifier, is_repack, is_proper =
     quality_parts rr.Radarr.rr_quality
   in
   let parsed, source, modifier, resolution, languages, release_group =

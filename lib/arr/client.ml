@@ -63,11 +63,8 @@ let fetch_media t id =
                     best_effort (fun () -> Sonarr.quality_profile ~base_url ~api_key pid)
               in
               let profile_name = Option.bind profile (fun p -> p.Resources.qp_name) in
-              Lwt.return
-                (Ok
-                   (Mapping.media_of_episode
-                      ?tags:(Some (Option.value tags ~default:[]))
-                      ?profile_name ep series))))
+              let tags = Option.value tags ~default:[] in
+              Lwt.return (Ok (Mapping.media_of_episode ~tags ?profile_name ep series))))
   | T.Radarr -> (
       let* m = Radarr.movie ~base_url ~api_key id in
       match m with
@@ -80,11 +77,8 @@ let fetch_media t id =
             | Some pid -> best_effort (fun () -> Radarr.quality_profile ~base_url ~api_key pid)
           in
           let profile_name = Option.bind profile (fun p -> p.Resources.qp_name) in
-          Lwt.return
-            (Ok
-               (Mapping.media_of_movie
-                  ?tags:(Some (Option.value tags ~default:[]))
-                  ?profile_name m)))
+          let tags = Option.value tags ~default:[] in
+          Lwt.return (Ok (Mapping.media_of_movie ~tags ?profile_name m)))
 
 (* ------------------------------------------------------------------ *)
 (* Releases                                                            *)

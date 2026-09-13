@@ -287,7 +287,8 @@ Pickarr to be the decision-maker; Pickarr never uses the
 on their own. Webhooks (SeriesAdd/MovieAdded/EpisodeFileDelete/MovieFileDelete) trigger an
 immediate pass for the affected item. A Seerr webhook resolves the approved
 request by TMDB/TVDB id (retrying while Sonarr/Radarr are still adding it)
-and selects the monitored, missing movie/episodes right away.
+and selects the monitored, missing movie or season right away, through the
+same `Fulfil` module the poller uses.
 
 ## Seerr request integration
 
@@ -296,8 +297,24 @@ requests, approve/decline, counts, movie/tv titles) and
 `lib/server/seerr_sync.ml` the poller. A pass optionally approves the pending
 requests, then for every approved-but-unavailable request picks the instances
 (`movie` -> Radarr, `tv` -> Sonarr; 4K requests prefer instances named "4k"),
-resolves the media through `Client.resolve_external`, and runs
-`Selection.run` per media id with `seerr.grab` deciding whether anything is
-grabbed. Requests are retried at most once every six hours. The decision
-helpers (`choose_instances`, `skip_reason`, `plan`) are pure and unit
-tested.
+hands each one to `lib/server/fulfil.ml` with `seerr.grab` deciding whether
+anything is grabbed. Requests are retried at most once every six hours. The
+decision helpers (`choose_instances`, `skip_reason`, `plan`) are pure and
+unit tested.
+
+`lib/server/fulfil.ml` is the one place that turns a request into selections,
+shared by the poller and the webhook path in `automatic.ml` (which is why it
+must not depend on `Automatic`: `Automatic` depends on it):
+
+* `resolve` maps a request onto one instance as a `target` —
+  `Movies ids` (Radarr, by TMDB id, with Seerr's `externalServiceId` as a last
+  resort), `Series {series_id; seasons}` (Sonarr, by TheTVDB id through
+  `Client.series_id_by_tvdb_id`, keeping only the requested seasons that still
+  miss episodes), `Episodes ids` (fallback when the series cannot be resolved),
+  or `Nothing` — which is what makes the callers wait and retry while Seerr is
+  still pushing to the *arr.
+* `run` executes it: `Selection.run` per movie/episode, or
+  `Selection.run_series` for a `Series` target, so a requested season is
+  satisfied by one season pack under the usual `Config.seasons` policy.
+* `seasons_to_compact` renders the per-season outcome (pack / episodes /
+  skipped) that the Requests tab displays.

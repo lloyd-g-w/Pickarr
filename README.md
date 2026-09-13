@@ -151,14 +151,25 @@ What happens per request:
    whose name or id contains "4k" (Seerr models 4K as a separate server;
    Pickarr has only the name to go on). A normal request prefers the others.
    With a single instance, that one is always used.
-3. The media is resolved by TMDB id (Radarr) or TVDB id plus the requested
-   season numbers (Sonarr), and only **monitored, still missing** items are
-   selected. Specials (season 0) are skipped. Seerr approves and pushes to the
-   *arr asynchronously, so the lookup is retried (15s, then 60s) while the item
-   is still being added.
-4. Each resolved item goes through the usual pipeline — hard rules,
-   deterministic scoring, AI if enabled — and is grabbed through
-   Sonarr/Radarr.
+3. The media is resolved by TMDB id (Radarr) or TheTVDB id (Sonarr), and only
+   **monitored, still missing** items are selected. Specials (season 0) are
+   skipped. Seerr approves and pushes to the *arr asynchronously, so the
+   lookup is retried (15s, then 60s) while the item is still being added.
+4. **A TV request is fulfilled season by season, as a season pack.** Each
+   requested season (all seasons when Seerr recorded none) goes through the
+   same policy as a manual whole-series run — see
+   [Seasons and whole series](#seasons-and-whole-series): a pack when enough
+   of the season is missing, the missing episodes individually otherwise or
+   when no acceptable pack exists. A request for one season is therefore
+   normally a single grab, not one per episode. Seasons that are already
+   complete are skipped.
+5. Each selection goes through the usual pipeline — hard rules, deterministic
+   scoring, AI if enabled — and is grabbed through Sonarr/Radarr. The
+   **Requests** tab shows, per season, whether a pack was grabbed, how many
+   episodes were taken instead, or why the season was skipped.
+
+The webhook and the poller share one implementation (`lib/server/fulfil.ml`),
+so a request that arrives by webhook is fulfilled exactly the same way.
 
 A request is retried at most once every six hours, so one that nothing can be
 found for does not occupy every pass. Requests whose media is already
@@ -266,7 +277,9 @@ individual episodes:
 The same policy drives automatic mode: wanted episodes are grouped by season,
 and a season whose missing share reaches the threshold is fetched as one pack
 (counting as one item for *max items per run*, with every missing episode of
-that season entering the cooldown).
+that season entering the cooldown). It also drives
+[Seerr](#seerr-integration) TV requests, so a requested season arrives as one
+pack.
 
 A whole-series run answers with one outcome per season:
 

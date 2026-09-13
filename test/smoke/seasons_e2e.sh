@@ -2,7 +2,9 @@
 # End-to-end smoke test for the Pickarr "seasons" stream.
 # Ports: fake Sonarr 19200, Pickarr 19201 (this worker's range).
 set -u
-cd "$(git rev-parse --show-toplevel)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+REPO="$(cd "$HERE/../.." && pwd)"
+cd "$REPO"
 
 SONARR_PORT=19200
 PICKARR_PORT=19201
@@ -11,7 +13,7 @@ COOKIE=/tmp/seasons-cookie
 
 rm -rf "$DATA" "$COOKIE"; mkdir -p "$DATA"
 
-python3 /tmp/seasons-fake-sonarr.py $SONARR_PORT > /tmp/seasons-fake-sonarr.log 2>&1 &
+python3 "$HERE"/fake_sonarr_seasons.py $SONARR_PORT > /tmp/seasons-fake-sonarr.log 2>&1 &
 FAKE_PID=$!
 DATA_DIR=$DATA PORT=$PICKARR_PORT PICKARR_USERNAME=a PICKARR_PASSWORD=secret123 \
   ./_build/default/bin/main.exe > /tmp/seasons-pickarr.log 2>&1 &

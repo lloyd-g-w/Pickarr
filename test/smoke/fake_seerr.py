@@ -13,6 +13,10 @@ from urllib.parse import urlparse, parse_qs
 
 PORT = int(sys.argv[1])
 STATE = sys.argv[2]
+# "movie" (default) serves the movie requests the Seerr smoke test asserts on;
+# "tv" serves a single approved TV request so the season-pack fulfilment path
+# can be driven on its own.
+MODE = os.environ.get("FAKE_SEERR_MODE", "movie")
 
 # tmdb 654321 -> the movie in test/arr/fixtures/radarr_movie.json
 REQUESTS = {
@@ -54,9 +58,28 @@ REQUESTS = {
     },
 }
 
+# Approved TV request for the series in test/arr/fixtures/sonarr_episode.json
+# (tvdbId 7654321), season 2 only. Seerr sends the season numbers it recorded;
+# Pickarr must turn them into one season-pack selection.
+TV_REQUESTS = {
+    45: {
+        "id": 45, "status": 2, "type": "tv", "is4k": False,
+        "seasons": [{"id": 1, "seasonNumber": 2, "status": 2}],
+        "createdAt": "2026-02-04T09:12:00.000Z",
+        "media": {"id": 81, "mediaType": "tv", "tmdbId": 1396, "tvdbId": 7654321,
+                  "status": 3, "status4k": 1,
+                  "externalServiceId": 12, "externalServiceId4k": None},
+        "requestedBy": {"id": 3, "email": "alice@example.com", "displayName": "alice"},
+    },
+}
+
+if MODE == "tv":
+    REQUESTS = TV_REQUESTS
+
 TITLES = {
     ("movie", 654321): {"id": 654321, "title": "Some Movie", "releaseDate": "2024-05-01"},
     ("movie", 999999): {"id": 999999, "title": "Already Here", "releaseDate": "2020-01-01"},
+    ("tv", 1396): {"id": 1396, "name": "Some Show", "firstAirDate": "2019-01-20"},
 }
 
 
@@ -118,7 +141,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "results": results,
             })
         if path == "/api/v1/request/count":
-            return self.send({"total": len(REQUESTS), "movie": len(REQUESTS), "tv": 0,
+            movies = sum(1 for r in REQUESTS.values() if r["type"] == "movie")
+            return self.send({"total": len(REQUESTS), "movie": movies,
+                              "tv": len(REQUESTS) - movies,
                               "pending": len(selected("pending")), "approved": len(selected("approved")),
                               "declined": 0, "processing": len(selected("processing")),
                               "available": 1, "completed": 1})

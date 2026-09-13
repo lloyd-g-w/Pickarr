@@ -1826,6 +1826,18 @@ function renderSeerrPoller() {
   renderSeerrResults((s.last_results || []).slice(0, 25));
 }
 
+/* One line per season of a fulfilled TV request: what Pickarr did with it.
+   The shape comes from Fulfil.season_to_compact. */
+function seasonOutcomeLine(s) {
+  const season = `S${String(s.season_number).padStart(2, "0")}`;
+  if (s.kind === "skipped") return `${season}: skipped (${s.reason || "nothing to do"})`;
+  if (s.kind === "episodes")
+    return `${season}: ${s.episodes} episode(s), ${s.grabbed} grabbed (${s.missing}/${s.total} missing)`;
+  const what = s.selected || "no usable release";
+  const state = s.grab_error ? `grab failed: ${s.grab_error}` : s.grabbed ? "grabbed" : "not grabbed";
+  return `${season}: pack — ${what} (${state})`;
+}
+
 function renderSeerrResults(results) {
   const container = $("#seerr-results");
   if (!container) return;
@@ -1847,7 +1859,18 @@ function renderSeerrResults(results) {
             "tr",
             {},
             el("td", {}, num(r.request || r.media || r.instance, "—")),
-            el("td", {}, r.error || r.skipped || r.action || r.selected || r.reason || "—"),
+            el(
+              "td",
+              {},
+              r.error || r.skipped || r.action || r.selected || r.reason || "—",
+              Array.isArray(r.seasons) && r.seasons.length
+                ? el(
+                    "div",
+                    { class: "hint" },
+                    ...r.seasons.map((s) => el("div", {}, seasonOutcomeLine(s)))
+                  )
+                : null
+            ),
             el("td", {}, r.grabbed === undefined ? "—" : r.grabbed ? "yes" : "no")
           )
         )

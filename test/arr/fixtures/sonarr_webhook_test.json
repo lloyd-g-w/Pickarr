@@ -1,0 +1,6 @@
+{
+  "eventType": "Test",
+  "instanceName": "Sonarr",
+  "series": { "id": 1, "title": "Test Title", "titleSlug": "test-title", "path": "/tv/Test Title", "tvdbId": 1234 },
+  "episodes": [ { "id": 123, "episodeNumber": 1, "seasonNumber": 1, "title": "Test title", "seriesId": 1, "tvdbId": 0 } ]
+}

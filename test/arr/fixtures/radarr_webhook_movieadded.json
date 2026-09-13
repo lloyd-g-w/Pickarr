@@ -1,0 +1,7 @@
+{
+  "eventType": "MovieAdded",
+  "instanceName": "Radarr",
+  "applicationUrl": "https://radarr.example",
+  "movie": { "id": 77, "title": "Some Movie", "year": 2024, "tmdbId": 654321, "imdbId": "tt7654321", "folderPath": "/movies/Some Movie (2024)", "genres": ["Drama"], "tags": [] },
+  "addMethod": "manual"
+}

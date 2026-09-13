@@ -1,0 +1,5 @@
+[
+  { "id": 1, "episodeId": 5150, "seriesId": 12, "sourceTitle": "Some.Show.S02E05.1080p.WEB-DL.DDP5.1.H.264-NTb", "date": "2024-06-01T10:00:00Z", "eventType": "grabbed", "downloadId": "ABC" },
+  { "id": 2, "episodeId": 5150, "seriesId": 12, "sourceTitle": "Some.Show.S02E05...", "date": "2024-06-01T10:30:00Z", "eventType": "downloadFolderImported", "downloadId": "ABC" },
+  { "id": 3, "episodeId": 6001, "seriesId": 12, "sourceTitle": "Some.Show.S03E01...", "date": "2024-06-02T09:00:00Z", "eventType": "grabbed", "downloadId": "DEF" }
+]

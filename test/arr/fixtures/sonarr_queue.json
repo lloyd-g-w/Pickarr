@@ -1,0 +1,9 @@
+{
+  "page": 1,
+  "pageSize": 1000,
+  "totalRecords": 2,
+  "records": [
+    { "id": 10, "seriesId": 12, "episodeId": 5150, "seasonNumber": 2, "size": 2952790016, "title": "Some.Show.S02E05...", "status": "downloading", "protocol": "torrent", "sizeleft": 100.0 },
+    { "id": 11, "seriesId": 12, "episodeId": null, "size": 1.0, "status": "queued", "protocol": "usenet", "sizeleft": 1.0 }
+  ]
+}

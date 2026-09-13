@@ -1,0 +1,53 @@
+{
+  "seriesId": 12,
+  "tvdbId": 7654321,
+  "episodeFileId": 900,
+  "seasonNumber": 2,
+  "episodeNumber": 5,
+  "title": "The One With The Release",
+  "airDate": "2024-03-01",
+  "airDateUtc": "2024-03-02T01:00:00Z",
+  "runtime": 47,
+  "overview": "An episode about choosing releases.",
+  "episodeFile": {
+    "id": 900,
+    "seriesId": 12,
+    "seasonNumber": 2,
+    "relativePath": "Season 02/episode.mkv",
+    "size": 2000000000,
+    "quality": {
+      "quality": { "id": 4, "name": "HDTV-720p", "source": "television", "resolution": 720 },
+      "revision": { "version": 1, "real": 0, "isRepack": false }
+    },
+    "customFormatScore": 0
+  },
+  "hasFile": true,
+  "monitored": true,
+  "absoluteEpisodeNumber": null,
+  "unverifiedSceneNumbering": false,
+  "series": {
+    "id": 12,
+    "title": "Some Show",
+    "sortTitle": "some show",
+    "status": "continuing",
+    "ended": false,
+    "profileName": "HD-1080p",
+    "overview": "A show.",
+    "network": "Example Network",
+    "year": 2019,
+    "path": "/tv/Some Show",
+    "qualityProfileId": 6,
+    "seasonFolder": true,
+    "monitored": true,
+    "runtime": 45,
+    "tvdbId": 7654321,
+    "seriesType": "anime",
+    "imdbId": "tt1234567",
+    "certification": "TV-MA",
+    "genres": ["Animation", "Action"],
+    "tags": [1, 3],
+    "originalLanguage": { "id": 8, "name": "Japanese" },
+    "added": "2020-01-01T00:00:00Z"
+  },
+  "id": 5150
+}

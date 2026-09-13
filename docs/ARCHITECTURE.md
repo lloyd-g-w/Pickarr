@@ -238,6 +238,7 @@ GET  /api/wanted/:instance_id            wanted (missing/cutoff) items
 POST /api/rules/propose                  {text} -> proposed structured rules (not saved)
 POST /api/rules/apply                    {patch} -> apply proposals after explicit approval
 POST /api/webhook/:instance_id           Sonarr/Radarr webhook receiver
+POST /api/webhook/seerr                  Seerr/Overseerr/Jellyseerr webhook (MEDIA_APPROVED / MEDIA_AUTO_APPROVED)
 GET  /api/automatic/status               scheduler status
 POST /api/automatic/run                  trigger a scheduler pass now
 ```
@@ -276,5 +277,7 @@ pipeline and grabs when `auto_grab` is on. Sonarr/Radarr's own automatic
 search/RSS must be disabled by the user (or via a Prowlarr sync profile) for
 Pickarr to be the decision-maker; Pickarr never uses the
 `EpisodeSearch`/`MoviesSearch` commands because those make Sonarr/Radarr grab
-on their own. Webhooks (SeriesAdd/MovieAdded/DownloadFailed/...) trigger an
-immediate pass for the affected item.
+on their own. Webhooks (SeriesAdd/MovieAdded/EpisodeFileDelete/MovieFileDelete) trigger an
+immediate pass for the affected item. A Seerr webhook resolves the approved
+request by TMDB/TVDB id (retrying while Sonarr/Radarr are still adding it)
+and selects the monitored, missing movie/episodes right away.

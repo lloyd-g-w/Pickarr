@@ -674,6 +674,76 @@ let seerr_webhook (state : App_state.t) request =
     | Ok body -> respond_json (Automatic.handle_seerr_webhook state body)
 
 (* ------------------------------------------------------------------ *)
+(* Seerr / Overseerr / Jellyseerr requests                             *)
+(* ------------------------------------------------------------------ *)
+
+let seerr_status (state : App_state.t) _request = respond_json (Seerr_sync.status state)
+
+(* Tests the SAVED configuration, like POST /api/instances/:id/test. *)
+let seerr_test (state : App_state.t) _request =
+  let* result = Seerr_sync.test state in
+  match result with
+  | Ok json -> respond_json json
+  | Error msg ->
+      Log_buffer.warnf "seerr test failed: %s" msg;
+      respond_json ~status:`Bad_Gateway (`Assoc [ ("ok", `Bool false); ("error", `String msg) ])
+
+let seerr_requests (state : App_state.t) request =
+  let filter =
+    match Dream.query request "filter" with
+    | None -> Ok `Processing
+    | Some f -> (
+        match Pickarr_arr.Seerr.filter_of_string f with
+        | Some f -> Ok f
+        | None -> Error (Printf.sprintf "unknown filter \"%s\"" f))
+  in
+  match filter with
+  | Error e -> error_json `Bad_Request e
+  | Ok filter -> (
+      let take = Option.value (int_query request "take") ~default:30 in
+      let* result = Seerr_sync.list_requests state ~filter ~take:(max 1 (min 100 take)) in
+      match result with
+      | Ok json -> respond_json json
+      | Error msg -> error_json `Bad_Gateway msg)
+
+let seerr_request_id request =
+  match int_of_string_opt (Dream.param request "id") with
+  | Some id when id > 0 -> Ok id
+  | _ -> Error "the request id must be a positive integer"
+
+(* Approving here also fulfils the request straight away, so the user does not
+   have to wait for the next poll. *)
+let seerr_decide (state : App_state.t) ~(approve : bool) request =
+  match seerr_request_id request with
+  | Error e -> error_json `Bad_Request e
+  | Ok request_id -> (
+      let* result = Seerr_sync.set_request_status state ~request_id ~approve in
+      match result with
+      | Error msg -> error_json `Bad_Gateway msg
+      | Ok json ->
+          if approve then Seerr_sync.fulfil_in_background state request_id;
+          respond_json
+            (`Assoc
+              [
+                ("ok", `Bool true);
+                ("action", `String (if approve then "approved" else "declined"));
+                ("request", json);
+              ]))
+
+let seerr_fulfil (state : App_state.t) request =
+  match seerr_request_id request with
+  | Error e -> error_json `Bad_Request e
+  | Ok request_id ->
+      Seerr_sync.fulfil_in_background state request_id;
+      respond_json
+        (`Assoc
+           [ ("ok", `Bool true); ("action", `String "fulfilling"); ("request_id", `Int request_id) ])
+
+let seerr_run (state : App_state.t) _request =
+  let* summary = Seerr_sync.run_once state in
+  respond_json summary
+
+(* ------------------------------------------------------------------ *)
 (* UI                                                                  *)
 (* ------------------------------------------------------------------ *)
 
@@ -771,6 +841,17 @@ let router (state : App_state.t) =
           Dream.get "/automatic/status"
             (guard "GET /api/automatic/status" (automatic_status state));
           Dream.post "/automatic/run" (guard "POST /api/automatic/run" (automatic_run state));
+          (* Seerr request integration *)
+          Dream.get "/seerr/status" (guard "GET /api/seerr/status" (seerr_status state));
+          Dream.post "/seerr/test" (guard "POST /api/seerr/test" (seerr_test state));
+          Dream.get "/seerr/requests" (guard "GET /api/seerr/requests" (seerr_requests state));
+          Dream.post "/seerr/requests/:id/approve"
+            (guard "POST /api/seerr/requests/:id/approve" (seerr_decide state ~approve:true));
+          Dream.post "/seerr/requests/:id/decline"
+            (guard "POST /api/seerr/requests/:id/decline" (seerr_decide state ~approve:false));
+          Dream.post "/seerr/requests/:id/fulfil"
+            (guard "POST /api/seerr/requests/:id/fulfil" (seerr_fulfil state));
+          Dream.post "/seerr/run" (guard "POST /api/seerr/run" (seerr_run state));
         ];
     ]
 

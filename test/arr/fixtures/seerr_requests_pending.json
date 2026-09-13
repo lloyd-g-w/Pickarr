@@ -1,0 +1,25 @@
+{
+  "pageInfo": { "pages": 1, "pageSize": 20, "results": 1, "page": 1 },
+  "results": [
+    {
+      "id": 43,
+      "status": 1,
+      "createdAt": "2026-02-02T08:00:00.000Z",
+      "updatedAt": "2026-02-02T08:00:00.000Z",
+      "type": "movie",
+      "is4k": false,
+      "seasons": [],
+      "media": {
+        "id": 79,
+        "mediaType": "movie",
+        "tmdbId": 27205,
+        "tvdbId": null,
+        "status": 2,
+        "status4k": 1,
+        "externalServiceId": null,
+        "externalServiceId4k": null
+      },
+      "requestedBy": { "id": 5, "email": "carol@example.com", "displayName": "carol" }
+    }
+  ]
+}

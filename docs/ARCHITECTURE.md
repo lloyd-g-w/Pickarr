@@ -239,6 +239,13 @@ POST /api/rules/propose                  {text} -> proposed structured rules (no
 POST /api/rules/apply                    {patch} -> apply proposals after explicit approval
 POST /api/webhook/:instance_id           Sonarr/Radarr webhook receiver
 POST /api/webhook/seerr                  Seerr/Overseerr/Jellyseerr webhook (MEDIA_APPROVED / MEDIA_AUTO_APPROVED)
+GET  /api/seerr/status                   Seerr poller status and last pass
+POST /api/seerr/test                     test the saved Seerr connection
+GET  /api/seerr/requests                 requests (?filter=pending|processing|..., ?take=)
+POST /api/seerr/requests/:id/approve     approve in Seerr, then fulfil
+POST /api/seerr/requests/:id/decline     decline in Seerr
+POST /api/seerr/requests/:id/fulfil      run a selection for that request now
+POST /api/seerr/run                      run a Seerr pass now
 GET  /api/automatic/status               scheduler status
 POST /api/automatic/run                  trigger a scheduler pass now
 ```
@@ -281,3 +288,16 @@ on their own. Webhooks (SeriesAdd/MovieAdded/EpisodeFileDelete/MovieFileDelete) 
 immediate pass for the affected item. A Seerr webhook resolves the approved
 request by TMDB/TVDB id (retrying while Sonarr/Radarr are still adding it)
 and selects the monitored, missing movie/episodes right away.
+
+## Seerr request integration
+
+`lib/arr/seerr.ml` is the typed client for Seerr's `/api/v1` (status,
+requests, approve/decline, counts, movie/tv titles) and
+`lib/server/seerr_sync.ml` the poller. A pass optionally approves the pending
+requests, then for every approved-but-unavailable request picks the instances
+(`movie` -> Radarr, `tv` -> Sonarr; 4K requests prefer instances named "4k"),
+resolves the media through `Client.resolve_external`, and runs
+`Selection.run` per media id with `seerr.grab` deciding whether anything is
+grabbed. Requests are retried at most once every six hours. The decision
+helpers (`choose_instances`, `skip_reason`, `plan`) are pure and unit
+tested.

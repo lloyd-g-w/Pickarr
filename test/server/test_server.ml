@@ -7,6 +7,8 @@ module Store = Pickarr_server.Store
 module Selection = Pickarr_server.Selection
 module Automatic = Pickarr_server.Automatic
 module Auth = Pickarr_server.Auth
+module Seerr = Pickarr_arr.Seerr
+module Seerr_sync = Pickarr_server.Seerr_sync
 
 let temp_dir prefix =
   let dir =
@@ -478,6 +480,163 @@ let test_seerr_action () =
     (Automatic.seerr_action ~trigger_enabled:false (ev ~media_type:"movie" ~tmdb:1 ()))
 
 (* ------------------------------------------------------------------ *)
+(* Seerr request integration (pure decision helpers)                   *)
+(* ------------------------------------------------------------------ *)
+
+let instance ?(app = Types.Radarr) ?(enabled = true) id name : Config.instance =
+  {
+    Config.inst_id = id;
+    inst_name = name;
+    inst_app = app;
+    inst_url = "http://localhost";
+    inst_api_key = "k";
+    inst_enabled = enabled;
+    inst_nl_preferences = "";
+    inst_automatic = false;
+  }
+
+let names (l : Config.instance list) = List.map (fun (i : Config.instance) -> i.inst_id) l
+
+let seerr_request ?(id = 1) ?(status = Seerr.status_approved) ?(kind = "movie") ?(is4k = false)
+    ?(media_status = Seerr.media_processing) ?(seasons = []) ?external_service_id () : Seerr.request
+    =
+  {
+    Seerr.rq_id = id;
+    rq_status = status;
+    rq_type = Some kind;
+    rq_is4k = is4k;
+    rq_seasons =
+      List.map (fun n -> { Seerr.sq_id = n; sq_season_number = n; sq_status = 2 }) seasons;
+    rq_media =
+      {
+        Seerr.mi_id = 1;
+        mi_media_type = Some kind;
+        mi_tmdb_id = Some 603;
+        mi_tvdb_id = Some 81189;
+        mi_imdb_id = None;
+        mi_status = (if is4k then Seerr.media_unknown else media_status);
+        mi_status4k = (if is4k then media_status else Seerr.media_unknown);
+        mi_external_service_id = (if is4k then None else external_service_id);
+        mi_external_service_id4k = (if is4k then external_service_id else None);
+        mi_service_id = None;
+      };
+    rq_requested_by = None;
+    rq_created_at = None;
+    rq_updated_at = None;
+  }
+
+let test_seerr_choose_instances () =
+  let hd = instance "radarr" "Radarr" in
+  let uhd = instance "radarr-4k" "Radarr 4K" in
+  let both = [ hd; uhd ] in
+  Alcotest.(check (list string))
+    "4k request goes to the 4k instance" [ "radarr-4k" ]
+    (names (Seerr_sync.choose_instances ~is4k:true both));
+  Alcotest.(check (list string))
+    "normal request avoids the 4k instance" [ "radarr" ]
+    (names (Seerr_sync.choose_instances ~is4k:false both));
+  (* A single instance is used whichever kind the request is. *)
+  Alcotest.(check (list string))
+    "no 4k instance: fall back to all" [ "radarr" ]
+    (names (Seerr_sync.choose_instances ~is4k:true [ hd ]));
+  Alcotest.(check (list string))
+    "only a 4k instance: fall back to all" [ "radarr-4k" ]
+    (names (Seerr_sync.choose_instances ~is4k:false [ uhd ]));
+  Alcotest.(check (list string)) "nothing configured" []
+    (names (Seerr_sync.choose_instances ~is4k:false []));
+  (* The name is matched case-insensitively, and so is the id. *)
+  Alcotest.(check (list string))
+    "matched on the name" [ "uhd" ]
+    (names (Seerr_sync.choose_instances ~is4k:true [ instance "uhd" "Movies 4K"; hd ]))
+
+let test_seerr_app_of_media_type () =
+  Alcotest.(check bool) "movie" true (Seerr_sync.app_of_media_type (Some "movie") = Some Types.Radarr);
+  Alcotest.(check bool) "tv" true (Seerr_sync.app_of_media_type (Some "tv") = Some Types.Sonarr);
+  Alcotest.(check bool) "none" true (Seerr_sync.app_of_media_type None = None);
+  Alcotest.(check bool) "music is unsupported" true
+    (Seerr_sync.app_of_media_type (Some "music") = None)
+
+let skip_reason ?(now = 1000.) ?(attempted = []) r =
+  Seerr_sync.skip_reason ~now ~cooldown_seconds:600. ~attempted r
+
+let test_seerr_skip_reason () =
+  Alcotest.(check (option string)) "an approved, processing request runs" None
+    (skip_reason (seerr_request ()));
+  Alcotest.(check (option string))
+    "pending requests are not fulfilled" (Some "request is pending")
+    (skip_reason (seerr_request ~status:Seerr.status_pending ()));
+  Alcotest.(check (option string))
+    "available media is skipped" (Some "media is already available")
+    (skip_reason (seerr_request ~media_status:Seerr.media_available ()));
+  (* A 4K request looks at status4k, so an available non-4K copy is
+     irrelevant. *)
+  Alcotest.(check (option string)) "4k copy still missing" None
+    (skip_reason (seerr_request ~is4k:true ()));
+  Alcotest.(check bool) "cooldown applies" true
+    (skip_reason ~attempted:[ (1, 900.) ] (seerr_request ()) <> None);
+  Alcotest.(check (option string)) "cooldown expired" None
+    (skip_reason ~attempted:[ (1, 100.) ] (seerr_request ()));
+  Alcotest.(check bool) "unsupported type" true
+    (skip_reason (seerr_request ~kind:"music" ()) <> None)
+
+let test_seerr_plan () =
+  let requests =
+    [
+      seerr_request ~id:1 ();
+      seerr_request ~id:2 ~media_status:Seerr.media_available ();
+      seerr_request ~id:3 ();
+      seerr_request ~id:4 ();
+    ]
+  in
+  let chosen, skipped =
+    Seerr_sync.plan ~now:1000. ~cooldown_seconds:600. ~attempted:[] ~limit:2 requests
+  in
+  Alcotest.(check (list int)) "limit respected, available one skipped" [ 1; 3 ]
+    (List.map (fun (r : Seerr.request) -> r.rq_id) chosen);
+  Alcotest.(check (list int)) "skipped ids" [ 2; 4 ]
+    (List.map (fun ((r : Seerr.request), _) -> r.rq_id) skipped);
+  Alcotest.(check bool) "the fourth is skipped for the limit, not its state" true
+    (List.exists
+       (fun ((r : Seerr.request), reason) -> r.rq_id = 4 && contains ~needle:"limit" reason)
+       skipped);
+  let none, all =
+    Seerr_sync.plan ~now:1000. ~cooldown_seconds:600. ~attempted:[] ~limit:0 requests
+  in
+  Alcotest.(check int) "zero limit chooses nothing" 0 (List.length none);
+  Alcotest.(check int) "zero limit skips everything" 4 (List.length all)
+
+let test_seerr_configured () =
+  let s = Config.default_seerr in
+  Alcotest.(check bool) "disabled by default" false (Seerr_sync.configured s);
+  Alcotest.(check bool) "enabled without a url is not configured" false
+    (Seerr_sync.configured { s with seerr_enabled = true });
+  Alcotest.(check bool) "enabled without a key is not configured" false
+    (Seerr_sync.configured { s with seerr_enabled = true; seerr_url = "http://seerr:5055" });
+  Alcotest.(check bool) "fully configured" true
+    (Seerr_sync.configured
+       { s with seerr_enabled = true; seerr_url = "http://seerr:5055"; seerr_api_key = "k" });
+  Alcotest.(check string) "reason names the missing piece" "no Seerr API key is configured"
+    (Seerr_sync.unconfigured_reason
+       { s with seerr_enabled = true; seerr_url = "http://seerr:5055" })
+
+let test_seerr_compact_request () =
+  let r = seerr_request ~id:7 ~kind:"tv" ~is4k:true ~seasons:[ 0; 2 ] ~external_service_id:44 () in
+  match Seerr_sync.request_to_compact r with
+  | `Assoc fields ->
+      Alcotest.(check (option string)) "id" (Some "7")
+        (Option.map Yojson.Safe.to_string (List.assoc_opt "id" fields));
+      Alcotest.(check bool) "seasons drop specials" true
+        (List.assoc_opt "seasons" fields = Some (`List [ `Int 2 ]));
+      Alcotest.(check bool) "is4k" true (List.assoc_opt "is4k" fields = Some (`Bool true));
+      Alcotest.(check bool) "media status label" true
+        (List.assoc_opt "media_status_label" fields = Some (`String "processing"));
+      Alcotest.(check bool) "pushed to the arr" true
+        (List.assoc_opt "pushed_to_arr" fields = Some (`Bool true));
+      Alcotest.(check bool) "title is null without a lookup" true
+        (List.assoc_opt "title" fields = Some `Null)
+  | _ -> Alcotest.fail "compact request must be an object"
+
+(* ------------------------------------------------------------------ *)
 (* Config plumbing used by the routes                                  *)
 (* ------------------------------------------------------------------ *)
 
@@ -732,6 +891,15 @@ let () =
           Alcotest.test_case "cooldown seconds" `Quick test_cooldown_seconds;
           Alcotest.test_case "webhook action" `Quick test_webhook_action;
           Alcotest.test_case "seerr action" `Quick test_seerr_action;
+        ] );
+      ( "seerr sync",
+        [
+          Alcotest.test_case "instance choice" `Quick test_seerr_choose_instances;
+          Alcotest.test_case "app of media type" `Quick test_seerr_app_of_media_type;
+          Alcotest.test_case "skip reason" `Quick test_seerr_skip_reason;
+          Alcotest.test_case "plan" `Quick test_seerr_plan;
+          Alcotest.test_case "configuration gate" `Quick test_seerr_configured;
+          Alcotest.test_case "compact request" `Quick test_seerr_compact_request;
         ] );
       ( "config",
         [ Alcotest.test_case "effective nl preferences" `Quick test_effective_nl_preferences ]

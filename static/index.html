@@ -13,6 +13,7 @@
       <nav id="tabs">
         <button data-tab="dashboard" class="active">Dashboard</button>
         <button data-tab="select">Select</button>
+        <button data-tab="requests">Requests</button>
         <button data-tab="rules">Rules &amp; Preferences</button>
         <button data-tab="instances">Instances</button>
         <button data-tab="llm">AI &amp; Automatic</button>
@@ -48,6 +49,9 @@
           <span id="automatic-run-result" class="result"></span>
         </p>
         <div id="automatic-results"></div>
+
+        <h2>Seerr</h2>
+        <div id="seerr-dashboard">Loading…</div>
       </section>
 
       <!-- ---------------------------------------------------------- -->
@@ -291,6 +295,40 @@
         <h2>Logs</h2>
         <p><button id="reload-logs">Reload</button></p>
         <pre id="logs-output">Loading…</pre>
+      </section>
+
+      <!-- ---------------------------------------------------------- -->
+      <section id="tab-requests" class="tab">
+        <h2>Seerr requests</h2>
+        <p class="hint">
+          Pickarr watches the request queue of Seerr, Overseerr or Jellyseerr.
+          Seerr keeps owning requests, approvals and adding the movie or series
+          to Sonarr/Radarr; Pickarr only decides which release is grabbed.
+          Approving here approves in Seerr and starts a selection immediately.
+        </p>
+
+        <h3>Connection</h3>
+        <div id="seerr-form" class="form-grid"></div>
+        <p>
+          <button id="seerr-save" class="primary">Save Seerr settings</button>
+          <button id="seerr-test">Test</button>
+          <span id="seerr-status-result" class="result"></span>
+        </p>
+
+        <h3>Poller</h3>
+        <div id="seerr-poller">Loading…</div>
+        <p>
+          <button id="seerr-run">Run now</button>
+          <button id="seerr-reload">Reload requests</button>
+          <span id="seerr-run-result" class="result"></span>
+        </p>
+        <div id="seerr-results"></div>
+
+        <h3>Pending approval</h3>
+        <div id="seerr-pending">Loading…</div>
+
+        <h3>Approved, waiting for a release</h3>
+        <div id="seerr-processing">Loading…</div>
       </section>
     </main>
 

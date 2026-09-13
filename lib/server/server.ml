@@ -60,6 +60,13 @@ let describe (state : App_state.t) =
     (if cfg.automatic.auto_enabled && not cfg.automatic.auto_grab then
        " (dry run: grabbing disabled)"
      else "");
+  Log_buffer.infof "Seerr integration %s%s"
+    (if cfg.seerr.seerr_enabled then "enabled" else "disabled")
+    (if cfg.seerr.seerr_enabled then
+       Printf.sprintf " (%s, %s approval, %s)" cfg.seerr.seerr_url
+         (if cfg.seerr.seerr_auto_approve then "automatic" else "manual")
+         (if cfg.seerr.seerr_grab then "grabbing" else "dry run")
+     else "");
   let auth = state.App_state.auth in
   (if not (Auth.auth_required auth) then
      Log_buffer.warnf
@@ -90,5 +97,6 @@ let main () =
       Dream.initialize_log ~level:(log_level_of_string cfg.log_level) ();
       describe state;
       Automatic.start state;
+      Seerr_sync.start state;
       Dream.run ~interface:(env_host ()) ~port:(env_port ()) ~greeting:false
         (Routes.handler state)

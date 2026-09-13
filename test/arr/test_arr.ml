@@ -487,6 +487,92 @@ let test_grab_response_handling () =
   | Error e -> Alcotest.failf "expected Http_status 409, got %s" (A.Http.error_to_string e)
   | Ok () -> Alcotest.fail "409 must not count as a grab"
 
+(* ------------------------------------------------------------------ *)
+(* Seerr request API                                                   *)
+(* ------------------------------------------------------------------ *)
+
+let test_seerr_requests () =
+  let page = A.Seerr.request_page_of_yojson (load "seerr_requests_processing.json") in
+  Alcotest.(check int) "page" 1 page.rp_page_info.pi_page;
+  Alcotest.(check int) "pages" 2 page.rp_page_info.pi_pages;
+  Alcotest.(check int) "page size" 2 page.rp_page_info.pi_page_size;
+  Alcotest.(check int) "total results" 3 page.rp_page_info.pi_results;
+  match page.rp_results with
+  | [ movie; tv ] ->
+      Alcotest.(check int) "movie request id" 41 movie.rq_id;
+      Alcotest.(check int) "approved" A.Seerr.status_approved movie.rq_status;
+      opt_string "type" (Some "movie") movie.rq_type;
+      bool_ "not 4k" false movie.rq_is4k;
+      opt_int "tmdb" (Some 603) movie.rq_media.mi_tmdb_id;
+      opt_int "tvdb is null" None movie.rq_media.mi_tvdb_id;
+      opt_int "radarr movie id" (Some 912) (A.Seerr.request_external_service_id movie);
+      Alcotest.(check int)
+        "media status is the non-4k one" A.Seerr.media_processing
+        (A.Seerr.request_media_status movie);
+      opt_string "requested by display name" (Some "alice")
+        (Option.bind movie.rq_requested_by (fun u -> u.us_name));
+      Alcotest.(check (list int)) "movie has no seasons" [] (A.Seerr.season_numbers movie);
+      Alcotest.(check int) "tv request id" 42 tv.rq_id;
+      bool_ "4k" true tv.rq_is4k;
+      opt_int "tvdb" (Some 81189) tv.rq_media.mi_tvdb_id;
+      Alcotest.(check (list int))
+        "specials dropped, seasons sorted" [ 2; 3 ] (A.Seerr.season_numbers tv);
+      (* A 4K request tracks status4k, not the (already available) status. *)
+      Alcotest.(check int)
+        "4k media status" A.Seerr.media_processing (A.Seerr.request_media_status tv);
+      opt_int "sonarr series id for the 4k copy" (Some 44)
+        (A.Seerr.request_external_service_id tv);
+      opt_string "plex username as the fallback name" (Some "bob")
+        (Option.bind tv.rq_requested_by (fun u -> u.us_name))
+  | other -> Alcotest.failf "expected 2 requests, got %d" (List.length other)
+
+let test_seerr_pending_and_counts () =
+  let page = A.Seerr.request_page_of_yojson (load "seerr_requests_pending.json") in
+  (match page.rp_results with
+  | [ r ] ->
+      Alcotest.(check int) "pending" A.Seerr.status_pending r.rq_status;
+      opt_int "no arr id before the push" None (A.Seerr.request_external_service_id r)
+  | other -> Alcotest.failf "expected 1 request, got %d" (List.length other));
+  let st = A.Seerr.status_of_yojson (load "seerr_status.json") in
+  Alcotest.(check string) "version" "3.0.1" st.sv_version;
+  bool_ "no update" false st.sv_update_available;
+  let c = A.Seerr.counts_of_yojson (load "seerr_request_count.json") in
+  Alcotest.(check int) "pending count" 2 c.ct_pending;
+  Alcotest.(check int) "processing count" 3 c.ct_processing
+
+let test_seerr_titles () =
+  let m = A.Seerr.movie_title_of_yojson (load "seerr_movie.json") in
+  Alcotest.(check string) "movie title" "The Matrix" m.ti_title;
+  opt_int "release year" (Some 1999) m.ti_year;
+  let t = A.Seerr.tv_title_of_yojson (load "seerr_tv.json") in
+  Alcotest.(check string) "tv name" "Breaking Bad" t.ti_title;
+  opt_int "first air year" (Some 2008) t.ti_year;
+  (* Missing dates and names must not raise. *)
+  let empty = A.Seerr.movie_title_of_yojson (`Assoc []) in
+  Alcotest.(check string) "no title" "" empty.ti_title;
+  opt_int "no year" None empty.ti_year
+
+let test_seerr_filters_and_lenience () =
+  Alcotest.(check string) "processing" "processing" (A.Seerr.filter_to_string `Processing);
+  bool_ "pending parses" true (A.Seerr.filter_of_string "PENDING" = Some `Pending);
+  bool_ "unknown filter" true (A.Seerr.filter_of_string "nonsense" = None);
+  (* A payload with neither type nor seasons still decodes; the media row
+     supplies the type. *)
+  let r =
+    A.Seerr.request_of_yojson
+      (Yojson.Safe.from_string {|{"id":9,"status":2,"media":{"mediaType":"TV","tmdbId":5}}|})
+  in
+  opt_string "type from the media row, lowercased" (Some "tv") r.rq_type;
+  Alcotest.(check (list int)) "no seasons" [] (A.Seerr.season_numbers r);
+  bool_ "not 4k by default" false r.rq_is4k;
+  Alcotest.(check int) "unknown media status by default" A.Seerr.media_unknown
+    (A.Seerr.request_media_status r);
+  Alcotest.(check string) "status label" "approved"
+    (A.Seerr.request_status_to_string r.rq_status);
+  (* An empty page must not raise either. *)
+  let empty = A.Seerr.request_page_of_yojson (`Assoc []) in
+  Alcotest.(check int) "no results" 0 (List.length empty.rp_results)
+
 let tests =
   [
     ("sonarr release mapping", `Quick, test_sonarr_release_mapping);
@@ -500,6 +586,10 @@ let tests =
     ("grab identity guards", `Quick, test_grab_identity_guards);
     ("webhooks", `Quick, test_webhooks);
     ("seerr webhook", `Quick, test_seerr_webhook);
+    ("seerr requests", `Quick, test_seerr_requests);
+    ("seerr pending and counts", `Quick, test_seerr_pending_and_counts);
+    ("seerr titles", `Quick, test_seerr_titles);
+    ("seerr filters and lenience", `Quick, test_seerr_filters_and_lenience);
     ("http join", `Quick, test_http_join);
     ("http error bodies", `Quick, test_http_error_bodies);
     ("grab response handling", `Quick, test_grab_response_handling);

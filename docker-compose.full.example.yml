@@ -31,6 +31,13 @@ services:
       SONARR_API_KEY: replace-with-sonarr-api-key
       RADARR_URL: http://radarr:7878
       RADARR_API_KEY: replace-with-radarr-api-key
+      # --- Seerr requests (optional) ---------------------------------------
+      # Lets Pickarr watch the request queue and fulfil approved requests.
+      # The key is Seerr -> Settings -> General -> API Key (admin key).
+      # SEERR_URL: http://seerr:5055
+      # SEERR_API_KEY: replace-with-seerr-api-key
+      # SEERR_AUTO_APPROVE: "false"
+      # SEERR_GRAB: "true"
       # --- LLM (any OpenAI-compatible server) ------------------------------
       LLM_ENABLED: "true"
       LLM_PROVIDER: openai-compatible
@@ -135,11 +142,14 @@ services:
       - "6881:6881"
       - "6881:6881/udp"
 
-  # Optional request front-end. After it starts, add a Webhook notification
-  # (Settings -> Notifications -> Webhook) with URL
-  # http://pickarr:8484/api/webhook/seerr, the Pickarr API key as the
-  # Authorization Header, and the "Request Approved" / "Request Automatically
-  # Approved" notification types enabled.
+  # Optional request front-end. Two ways to connect it, which work together:
+  #  1. Webhook (instant): Settings -> Notifications -> Webhook, URL
+  #     http://pickarr:8484/api/webhook/seerr, the Pickarr API key as the
+  #     Authorization Header, and the "Request Approved" / "Request
+  #     Automatically Approved" notification types enabled.
+  #  2. API (queue): put this container's URL and an admin API key into
+  #     Pickarr's Requests tab (or SEERR_URL / SEERR_API_KEY above) so Pickarr
+  #     polls the request queue and can approve and fulfil requests itself.
   seerr:
     image: ghcr.io/seerr-team/seerr:latest
     container_name: seerr

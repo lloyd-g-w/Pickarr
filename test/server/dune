@@ -1,4 +1,4 @@
 (test
  (name test_server)
  (package pickarr)
- (libraries pickarr_core pickarr_server alcotest yojson lwt lwt.unix unix))
+ (libraries pickarr_core pickarr_arr pickarr_server alcotest yojson lwt lwt.unix unix))

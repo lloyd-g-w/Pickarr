@@ -116,6 +116,64 @@ movie or episodes and grabs when *Actually grab* is on. Pickarr still searches
 and grabs through Sonarr/Radarr; Seerr is only a trigger. Requests for media
 that already has a file are ignored.
 
+The webhook is optional. Connecting Pickarr to the Seerr **API** as well (next
+section) is what makes it watch the queue, so nothing is missed when Pickarr is
+restarted or a webhook is lost.
+
+## Seerr integration
+
+Beyond the webhook, Pickarr can talk to the Seerr API and work the request
+queue itself. On the **Requests** tab, fill in:
+
+```text
+Seerr URL        http://seerr:5055
+Seerr API key    Seerr → Settings → General → API Key   (an admin key)
+```
+
+Press **Test** (it reads `GET /api/v1/status` and the request counts), then
+choose what Pickarr should do every poll:
+
+| Setting | Effect |
+| --- | --- |
+| Approve pending requests | Approves everything waiting for approval (`POST /request/{id}/approve`). Off by default: leave it off if you want to keep vetting requests yourself, in Seerr or from this tab. |
+| Fulfil approved requests | For every approved-but-not-available request, resolves the movie/episodes in Sonarr/Radarr and runs the normal pipeline. |
+| Actually grab | Off = dry run: the pass logs the release it would have grabbed. |
+| Poll interval / Max requests per run | How often, and how much work one pass may create. |
+
+Why an **admin** API key: approving or declining needs Seerr's
+`MANAGE_REQUESTS` permission. If you only want fulfilment, a key without it
+still works as long as *Approve pending requests* stays off.
+
+What happens per request:
+
+1. The request type picks the app — `movie` → Radarr, `tv` → Sonarr.
+2. Among the enabled instances of that app, a 4K request prefers instances
+   whose name or id contains "4k" (Seerr models 4K as a separate server;
+   Pickarr has only the name to go on). A normal request prefers the others.
+   With a single instance, that one is always used.
+3. The media is resolved by TMDB id (Radarr) or TVDB id plus the requested
+   season numbers (Sonarr), and only **monitored, still missing** items are
+   selected. Specials (season 0) are skipped. Seerr approves and pushes to the
+   *arr asynchronously, so the lookup is retried (15s, then 60s) while the item
+   is still being added.
+4. Each resolved item goes through the usual pipeline — hard rules,
+   deterministic scoring, AI if enabled — and is grabbed through
+   Sonarr/Radarr.
+
+A request is retried at most once every six hours, so one that nothing can be
+found for does not occupy every pass. Requests whose media is already
+available are never touched.
+
+Approving from the Requests tab approves in Seerr **and** starts the selection
+immediately; *Fulfil now* re-runs the selection for an already approved
+request.
+
+Note on Seerr's own "search on add": in sidecar mode you disable automatic
+search on your indexers (see [automatic mode](#automatic-mode)), so Sonarr and
+Radarr will not grab anything by themselves when Seerr adds the item —
+Pickarr's pass is what finds the release. Seerr's request status still tracks
+the media normally: it flips to available once the download is imported.
+
 ## Features
 
 * **Works with both** Sonarr (v4) and Radarr (v5), multiple instances of each.
@@ -329,6 +387,13 @@ LLM fails, and 500 for anything unexpected.
 | POST | `/api/automatic/run` | Run a scheduler pass now |
 | POST | `/api/webhook/:instance_id` | Sonarr/Radarr webhook receiver |
 | POST | `/api/webhook/seerr` | Seerr / Overseerr / Jellyseerr webhook receiver (default payload) |
+| GET | `/api/seerr/status` | Seerr poller status and last pass |
+| POST | `/api/seerr/test` | Test the saved Seerr connection |
+| GET | `/api/seerr/requests` | Requests (`?filter=pending\|processing\|approved\|available\|failed\|all`, `?take=`) |
+| POST | `/api/seerr/requests/:id/approve` | Approve in Seerr and fulfil immediately |
+| POST | `/api/seerr/requests/:id/decline` | Decline in Seerr |
+| POST | `/api/seerr/requests/:id/fulfil` | Run a selection for that request now |
+| POST | `/api/seerr/run` | Run a Seerr pass now |
 
 Requests below assume no authentication; add `-H 'X-Api-Key: <key>'` when an
 API key is configured.

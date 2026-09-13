@@ -1,12 +1,12 @@
 (* Tests for the server stream: persistence, request parsing and the pure
    automatic-mode decision logic. Nothing here touches the network. *)
 
-module Config = Selectarr_core.Config
-module Types = Selectarr_core.Types
-module Store = Selectarr_server.Store
-module Selection = Selectarr_server.Selection
-module Automatic = Selectarr_server.Automatic
-module Auth = Selectarr_server.Auth
+module Config = Pickarr_core.Config
+module Types = Pickarr_core.Types
+module Store = Pickarr_server.Store
+module Selection = Pickarr_server.Selection
+module Automatic = Pickarr_server.Automatic
+module Auth = Pickarr_server.Auth
 
 let temp_dir prefix =
   let dir =
@@ -576,17 +576,6 @@ let test_auth_env_credentials () =
     (contains ~needle:"password_hash\": \"" stored
     && not (contains ~needle:"password_hash\": \"\"" stored))
 
-let test_auth_selectarr_aliases () =
-  let dir = temp_dir "pickarr-auth" in
-  let env = function
-    | "SELECTARR_PASSWORD" -> Some "legacy password"
-    | "SELECTARR_USERNAME" -> Some "legacy"
-    | _ -> None
-  in
-  let auth = auth_of ~getenv:env dir in
-  Alcotest.(check bool) "alias accepted" true
-    (Result.is_ok (Auth.check_login auth ~username:"legacy" ~password:"legacy password"))
-
 (* ------------------------------------------------------------------ *)
 (* The pure authorisation decision                                     *)
 (* ------------------------------------------------------------------ *)
@@ -694,7 +683,6 @@ let () =
           Alcotest.test_case "setup and login" `Quick test_auth_setup_and_login;
           Alcotest.test_case "api key and toggle" `Quick test_auth_api_key_and_toggle;
           Alcotest.test_case "env credentials" `Quick test_auth_env_credentials;
-          Alcotest.test_case "legacy env aliases" `Quick test_auth_selectarr_aliases;
         ] );
       ( "authorisation",
         [

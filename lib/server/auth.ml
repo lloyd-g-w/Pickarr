@@ -10,9 +10,8 @@
    with digestif's HMAC-SHA256; the plaintext is never written anywhere.
 
    Credential sources, in priority order:
-   1. PICKARR_USERNAME / PICKARR_PASSWORD, or the SELECTARR_ prefixed
-      aliases, which are never persisted and suit immutable container
-      deployments;
+   1. PICKARR_USERNAME / PICKARR_PASSWORD environment variables, which are
+      never persisted and suit immutable container deployments;
    2. the stored auth.json, created by the first-run setup page.
 
    Sessions are Dream sessions; this module only decides *whether* a request is
@@ -175,11 +174,10 @@ let bool_of_env_string s =
     cookie secret are generated and persisted on first start. *)
 let create ?(getenv = Sys.getenv_opt) ~data_dir () =
   let path = Filename.concat data_dir "auth.json" in
-  (* PICKARR_* is the documented spelling; SELECTARR_* is accepted as an alias
-     for installations that started on the older name. *)
   let env name =
-    let try_one key = match getenv key with Some v when String.trim v <> "" -> Some (String.trim v) | _ -> None in
-    match try_one ("PICKARR_" ^ name) with Some v -> Some v | None -> try_one ("SELECTARR_" ^ name)
+    match getenv ("PICKARR_" ^ name) with
+    | Some v when String.trim v <> "" -> Some (String.trim v)
+    | _ -> None
   in
   let* stored =
     if not (Sys.file_exists path) then Lwt.return (Ok `Null)

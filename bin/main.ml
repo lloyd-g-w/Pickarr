@@ -1,2 +1,2 @@
 (* Pickarr entry point. *)
-let () = Selectarr_server.Server.main ()
+let () = Pickarr_server.Server.main ()

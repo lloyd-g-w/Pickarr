@@ -2,7 +2,7 @@
 
    Every accessor is total: a missing key, a null, or a value of the wrong
    type yields the supplied default instead of raising.  That is deliberate.
-   Sonarr and Radarr add and remove fields between releases, and Selectarr
+   Sonarr and Radarr add and remove fields between releases, and Pickarr
    must keep working when a field it does not care about changes shape.
 
    Key lookup is case-insensitive because API resources are camelCase while

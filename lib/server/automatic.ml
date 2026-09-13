@@ -15,9 +15,9 @@
      on every pass;
    - with [automatic.grab = false] the pass is a dry run. *)
 
-module Config = Selectarr_core.Config
-module Types = Selectarr_core.Types
-module Client = Selectarr_arr.Client
+module Config = Pickarr_core.Config
+module Types = Pickarr_core.Types
+module Client = Pickarr_arr.Client
 
 let ( let* ) = Lwt.bind
 

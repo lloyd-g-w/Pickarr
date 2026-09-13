@@ -1,5 +1,5 @@
 (library
- (name selectarr_server)
- (public_name selectarr.server)
- (libraries selectarr_core selectarr_arr selectarr_llm dream yojson lwt lwt.unix digestif
+ (name pickarr_server)
+ (public_name pickarr.server)
+ (libraries pickarr_core pickarr_arr pickarr_llm dream yojson lwt lwt.unix digestif
    unix ptime ptime.clock.os))

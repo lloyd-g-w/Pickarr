@@ -1,4 +1,4 @@
-(* Shared domain types for Selectarr.
+(* Shared domain types for Pickarr.
 
    This module is the contract between the Sonarr/Radarr clients, the
    selection pipeline, the LLM client and the HTTP server.  Keep it free of
@@ -36,7 +36,7 @@ type custom_format = { cf_id : int; cf_name : string }
     Fields that Sonarr/Radarr provide directly are copied verbatim.  Fields
     such as [codec], [audio], [hdr] and [dolby_vision] are NOT provided by the
     *arr APIs and are parsed from the release title by
-    [Selectarr_core.Title_parser]. *)
+    [Pickarr_core.Title_parser]. *)
 type release = {
   id : string;
       (** Stable identifier used in API responses and LLM prompts.  It is the
@@ -132,7 +132,7 @@ type rejection = {
 
 and rejection_stage =
   | Arr_rejection  (** Sonarr/Radarr itself rejected the release *)
-  | Hard_rule  (** A Selectarr hard rule rejected the release *)
+  | Hard_rule  (** A Pickarr hard rule rejected the release *)
 
 type rejected_release = { release : release; reasons : rejection list }
 

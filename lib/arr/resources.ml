@@ -57,7 +57,7 @@ let quality_model_of_yojson j =
     qm_revision = Option.map revision_of_yojson (J.member "revision" j);
   }
 
-(** [CustomFormatResource] schema (only the fields Selectarr needs). *)
+(** [CustomFormatResource] schema (only the fields Pickarr needs). *)
 type custom_format = { cf_id : int; cf_name : string option }
 
 let custom_format_of_yojson j =

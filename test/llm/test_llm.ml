@@ -1,7 +1,7 @@
 (* Tests for the OpenAI-compatible client's pure layer. *)
 
-module C = Selectarr_core.Config
-module Client = Selectarr_llm.Client
+module C = Pickarr_core.Config
+module Client = Pickarr_llm.Client
 
 let str = Alcotest.(check string)
 
@@ -150,4 +150,4 @@ let tests =
     ("error messages", `Quick, test_error_messages);
   ]
 
-let () = Alcotest.run "selectarr-llm" [ ("llm", tests) ]
+let () = Alcotest.run "pickarr-llm" [ ("llm", tests) ]

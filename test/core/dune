@@ -1,4 +1,4 @@
 (test
  (name test_core)
- (package selectarr)
- (libraries selectarr_core alcotest yojson lwt lwt.unix))
+ (package pickarr)
+ (libraries pickarr_core alcotest yojson lwt lwt.unix))

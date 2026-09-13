@@ -1,5 +1,5 @@
 (executable
  (name main)
- (public_name selectarr)
- (package selectarr)
- (libraries selectarr_server logs logs.fmt fmt fmt.tty lwt lwt.unix))
+ (public_name pickarr)
+ (package pickarr)
+ (libraries pickarr_server logs logs.fmt fmt fmt.tty lwt lwt.unix))

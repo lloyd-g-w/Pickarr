@@ -10,11 +10,11 @@
      X-Api-Key or ?apikey= (the query form exists because the *arr webhook UI
      cannot send custom headers). /health and /api/auth/* stay reachable. *)
 
-module Config = Selectarr_core.Config
-module Types = Selectarr_core.Types
-module Client = Selectarr_arr.Client
-module Llm = Selectarr_llm.Client
-module Rules_proposal = Selectarr_core.Rules_proposal
+module Config = Pickarr_core.Config
+module Types = Pickarr_core.Types
+module Client = Pickarr_arr.Client
+module Llm = Pickarr_llm.Client
+module Rules_proposal = Pickarr_core.Rules_proposal
 
 let ( let* ) = Lwt.bind
 

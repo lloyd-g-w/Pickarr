@@ -1,4 +1,4 @@
 (library
- (name selectarr_core)
- (public_name selectarr.core)
+ (name pickarr_core)
+ (public_name pickarr.core)
  (libraries yojson re lwt unix))

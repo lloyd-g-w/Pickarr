@@ -4,9 +4,9 @@
    Clients are cached per instance id and rebuilt whenever the instance's URL
    or API key changes, so a config update takes effect without a restart. *)
 
-module Config = Selectarr_core.Config
-module Types = Selectarr_core.Types
-module Client = Selectarr_arr.Client
+module Config = Pickarr_core.Config
+module Types = Pickarr_core.Types
+module Client = Pickarr_arr.Client
 
 type scheduler = {
   mutex : Lwt_mutex.t;

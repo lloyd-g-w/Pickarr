@@ -1,7 +1,7 @@
 (* Process entry point: load configuration, build state, start the automatic
    scheduler and serve the HTTP API and UI. *)
 
-module Config = Selectarr_core.Config
+module Config = Pickarr_core.Config
 
 let default_port = 8484
 let default_host = "0.0.0.0"
@@ -41,7 +41,7 @@ let describe (state : App_state.t) =
   List.iter
     (fun (i : Config.instance) ->
       Log_buffer.infof "instance %s: %s %s%s%s" i.inst_id
-        (Selectarr_core.Types.app_to_string i.inst_app)
+        (Pickarr_core.Types.app_to_string i.inst_app)
         i.inst_url
         (if i.inst_enabled then "" else " (disabled)")
         (if i.inst_automatic then " [automatic]" else ""))

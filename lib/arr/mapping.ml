@@ -1,12 +1,12 @@
-(* Mapping from Sonarr/Radarr API resources onto Selectarr's internal model,
+(* Mapping from Sonarr/Radarr API resources onto Pickarr's internal model,
    plus the (pure) request bodies used to grab a release.
 
    Sonarr and Radarr describe a release's quality but never its video codec,
    audio format, HDR flavour or Dolby Vision profile, so those are recovered
-   from the release title with [Selectarr_core.Title_parser]. *)
+   from the release title with [Pickarr_core.Title_parser]. *)
 
-module T = Selectarr_core.Types
-module TP = Selectarr_core.Title_parser
+module T = Pickarr_core.Types
+module TP = Pickarr_core.Title_parser
 module J = Jsonutil
 module R = Resources
 
@@ -87,7 +87,7 @@ let derive ~title ~api_source ~api_resolution ~api_modifier ~api_group ~api_lang
 (* Releases                                                            *)
 (* ------------------------------------------------------------------ *)
 
-(** Map a Sonarr [ReleaseResource] onto {!Selectarr_core.Types.release}. *)
+(** Map a Sonarr [ReleaseResource] onto {!Pickarr_core.Types.release}. *)
 let release_of_sonarr (rr : Sonarr.release_resource) : T.release =
   let name, api_source, api_resolution, api_modifier, is_repack, is_proper =
     quality_parts rr.Sonarr.rr_quality
@@ -143,7 +143,7 @@ let release_of_sonarr (rr : Sonarr.release_resource) : T.release =
     raw = rr.Sonarr.rr_raw;
   }
 
-(** Map a Radarr [ReleaseResource] onto {!Selectarr_core.Types.release}. *)
+(** Map a Radarr [ReleaseResource] onto {!Pickarr_core.Types.release}. *)
 let release_of_radarr (rr : Radarr.release_resource) : T.release =
   let name, api_source, api_resolution, api_modifier, is_repack, is_proper =
     quality_parts rr.Radarr.rr_quality
@@ -213,7 +213,7 @@ let tag_labels (tags : R.tag list) (ids : int list) =
 let some_string k = function Some v -> [ (k, `String v) ] | None -> []
 let some_int k = function Some v -> [ (k, `Int v) ] | None -> []
 
-(** Build {!Selectarr_core.Types.media} for a Sonarr episode.  [series] is
+(** Build {!Pickarr_core.Types.media} for a Sonarr episode.  [series] is
     required for genres/series type; [tags] and [profile_name] are
     best-effort and may be [[]] / [None]. *)
 let media_of_episode ?(tags = []) ?profile_name (ep : Sonarr.episode_resource)
@@ -249,7 +249,7 @@ let media_of_episode ?(tags = []) ?profile_name (ep : Sonarr.episode_resource)
       @ some_string "air_date_utc" ep.Sonarr.er_air_date_utc;
   }
 
-(** Build {!Selectarr_core.Types.media} for a Radarr movie. *)
+(** Build {!Pickarr_core.Types.media} for a Radarr movie. *)
 let media_of_movie ?(tags = []) ?profile_name (m : Radarr.movie_resource) : T.media =
   {
     T.app = T.Radarr;

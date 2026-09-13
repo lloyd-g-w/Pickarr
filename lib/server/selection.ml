@@ -4,11 +4,11 @@
      fetch media -> search releases -> pipeline (filter, score, AI) ->
      optionally grab -> append history. *)
 
-module Config = Selectarr_core.Config
-module Types = Selectarr_core.Types
-module Pipeline = Selectarr_core.Pipeline
-module Client = Selectarr_arr.Client
-module Llm = Selectarr_llm.Client
+module Config = Pickarr_core.Config
+module Types = Pickarr_core.Types
+module Pipeline = Pickarr_core.Pipeline
+module Client = Pickarr_arr.Client
+module Llm = Pickarr_llm.Client
 
 type options = {
   grab : bool;  (** Actually tell Sonarr/Radarr to grab the winner. *)
@@ -121,9 +121,9 @@ let run ?(grab_allowed = fun (_ : Types.selection_result) -> true) (state : App_
       Lwt.return
         (Error
            (match e with
-           | Selectarr_arr.Http.Http_status (404, _) -> Media_not_found msg
-           | Selectarr_arr.Http.Http_status _ | Selectarr_arr.Http.Connection _
-           | Selectarr_arr.Http.Json _ ->
+           | Pickarr_arr.Http.Http_status (404, _) -> Media_not_found msg
+           | Pickarr_arr.Http.Http_status _ | Pickarr_arr.Http.Connection _
+           | Pickarr_arr.Http.Json _ ->
                Arr_error msg))
   | Ok media -> (
       let* releases = Client.search_releases client media in

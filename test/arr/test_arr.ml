@@ -3,8 +3,8 @@
    The fixtures under fixtures/ mirror real API payloads; their field names
    and types come from the vendored OpenAPI documents. *)
 
-module T = Selectarr_core.Types
-module A = Selectarr_arr
+module T = Pickarr_core.Types
+module A = Pickarr_arr
 
 let load name =
   let path = Filename.concat "fixtures" name in
@@ -390,4 +390,4 @@ let tests =
     ("lenient decoding", `Quick, test_lenient_decoding);
   ]
 
-let () = Alcotest.run "selectarr-arr" [ ("arr", tests) ]
+let () = Alcotest.run "pickarr-arr" [ ("arr", tests) ]

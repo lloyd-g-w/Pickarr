@@ -1,13 +1,13 @@
-# Selectarr architecture
+# Pickarr architecture
 
-Selectarr (repo name: Pickarr) is an OCaml sidecar that sits next to Sonarr,
+Pickarr (repo name: Pickarr) is an OCaml sidecar that sits next to Sonarr,
 Radarr, Prowlarr and qBittorrent. It talks **only** to Sonarr/Radarr (and an
 OpenAI-compatible LLM). Sonarr/Radarr keep owning indexers, download clients
-and imports; Selectarr owns *which release gets grabbed*.
+and imports; Pickarr owns *which release gets grabbed*.
 
 ```
                  ┌──────────────┐        ┌──────────────┐
-   Prowlarr ───► │   Sonarr     │ ◄───── │  Selectarr   │ ───► OpenAI-compatible LLM
+   Prowlarr ───► │   Sonarr     │ ◄───── │  Pickarr   │ ───► OpenAI-compatible LLM
                  │   Radarr     │  API   │  (OCaml)     │
    qBittorrent ◄─│              │        └──────────────┘
                  └──────────────┘
@@ -22,13 +22,13 @@ and imports; Selectarr owns *which release gets grabbed*.
 ## Source layout and ownership
 
 ```
-bin/main.ml                 executable entry point -> Selectarr_server.Server.main
-lib/core/   selectarr_core  pure domain: types, config, title parsing, hard filter,
+bin/main.ml                 executable entry point -> Pickarr_server.Server.main
+lib/core/   pickarr_core  pure domain: types, config, title parsing, hard filter,
                             scoring, prompt building, LLM response validation,
                             explainability, pipeline orchestration
-lib/arr/    selectarr_arr   typed Sonarr v4 / Radarr v3 API clients + mapping to core types
-lib/llm/    selectarr_llm   OpenAI-compatible chat-completions client
-lib/server/ selectarr_server Dream routes, JSON config store, UI, automatic mode, webhooks
+lib/arr/    pickarr_arr   typed Sonarr v4 / Radarr v3 API clients + mapping to core types
+lib/llm/    pickarr_llm   OpenAI-compatible chat-completions client
+lib/server/ pickarr_server Dream routes, JSON config store, UI, automatic mode, webhooks
 static/                     UI assets served by Dream
 test/core, test/arr, test/llm   Alcotest suites (one dune per directory)
 docs/API_RESEARCH.md        verified API reference (do not guess endpoints)
@@ -40,7 +40,7 @@ vendor/                     upstream OpenAPI specs + C# sources used for verific
 These signatures are the contract between the work streams. Implementations
 must match them exactly so the pieces link together without changes.
 
-### `Selectarr_core.Types` (done) and `Selectarr_core.Config` (done)
+### `Pickarr_core.Types` (done) and `Pickarr_core.Config` (done)
 
 See `lib/core/types.ml` and `lib/core/config.ml`. `Types.release` is the
 internal candidate; `Types.media` the item being evaluated;
@@ -48,7 +48,7 @@ internal candidate; `Types.media` the item being evaluated;
 configuration (instances, llm, hard_rules, preferences, weights,
 nl_preferences, automatic).
 
-### `Selectarr_core.Title_parser` (owner: arr stream)
+### `Pickarr_core.Title_parser` (owner: arr stream)
 
 ```ocaml
 type parsed = {
@@ -70,7 +70,7 @@ val normalise_codec : string -> string   (* "hevc"/"h265"/"h.265"/"x265" -> "x26
 val normalise_source : string -> string  (* "webdl"/"web-dl"/"web" -> "WEB-DL"; "webrip" -> "WEBRip"; "bluray"/"bdrip"/"brrip"-> "Bluray"; "remux" -> "Remux" *)
 ```
 
-### `Selectarr_arr` (owner: arr stream)
+### `Pickarr_arr` (owner: arr stream)
 
 ```ocaml
 (* lib/arr/http.ml *)
@@ -96,27 +96,27 @@ module Client : sig
   type t
   type error = Http.error
   val error_to_string : error -> string
-  val create : Selectarr_core.Config.instance -> t
-  val instance : t -> Selectarr_core.Config.instance
-  val app : t -> Selectarr_core.Types.app
+  val create : Pickarr_core.Config.instance -> t
+  val instance : t -> Pickarr_core.Config.instance
+  val app : t -> Pickarr_core.Types.app
 
   (** GET /api/v3/system/status -> (appName, version, instanceName) *)
   val test_connection : t -> (string * string * string, error) result Lwt.t
 
   (** Sonarr: episodeId (fetches episode + series). Radarr: movieId. *)
-  val fetch_media : t -> int -> (Selectarr_core.Types.media, error) result Lwt.t
+  val fetch_media : t -> int -> (Pickarr_core.Types.media, error) result Lwt.t
 
   (** GET /api/v3/release?episodeId= | ?movieId= mapped to core releases.
       Never filters anything out; rejected releases are returned with
       arr_rejected=true and arr_rejection_reasons populated. *)
-  val search_releases : t -> Selectarr_core.Types.media -> (Selectarr_core.Types.release list, error) result Lwt.t
+  val search_releases : t -> Pickarr_core.Types.media -> (Pickarr_core.Types.release list, error) result Lwt.t
 
   (** POST /api/v3/release {guid, indexerId, (+ seriesId/episodeIds or movieId)} *)
-  val grab : t -> Selectarr_core.Types.media -> Selectarr_core.Types.release -> (unit, error) result Lwt.t
+  val grab : t -> Pickarr_core.Types.media -> Pickarr_core.Types.release -> (unit, error) result Lwt.t
 
   (** wanted/missing or wanted/cutoff -> media items (monitored only) *)
   val wanted : t -> kind:[ `Missing | `Cutoff ] -> page:int -> page_size:int
-              -> (Selectarr_core.Types.media list * int (* totalRecords *), error) result Lwt.t
+              -> (Pickarr_core.Types.media list * int (* totalRecords *), error) result Lwt.t
 
   (** media ids (episodeId / movieId) currently in the download queue *)
   val queue_media_ids : t -> (int list, error) result Lwt.t
@@ -125,11 +125,11 @@ module Client : sig
   val recently_grabbed_media_ids : t -> since_hours:float -> (int list, error) result Lwt.t
 
   (** Parse an incoming *arr webhook body into (eventType, media ids). *)
-  val parse_webhook : Selectarr_core.Types.app -> Yojson.Safe.t -> (string * int list, string) result
+  val parse_webhook : Pickarr_core.Types.app -> Yojson.Safe.t -> (string * int list, string) result
 end
 ```
 
-### `Selectarr_llm` (owner: arr stream)
+### `Pickarr_llm` (owner: arr stream)
 
 ```ocaml
 module Client : sig
@@ -145,16 +145,16 @@ module Client : sig
       parsed as JSON (strips ```json fences, tolerates leading/trailing prose
       by extracting the outermost {...}). Honours llm_json_mode, temperature,
       max_tokens, timeout. *)
-  val chat_json : Selectarr_core.Config.llm -> system:string -> user:string
+  val chat_json : Pickarr_core.Config.llm -> system:string -> user:string
                   -> (Yojson.Safe.t, error) result Lwt.t
 
   (** Free text completion (used by "test LLM connection"). *)
-  val chat_text : Selectarr_core.Config.llm -> system:string -> user:string
+  val chat_text : Pickarr_core.Config.llm -> system:string -> user:string
                   -> (string, error) result Lwt.t
 end
 ```
 
-### `Selectarr_core` pipeline modules (owner: core stream)
+### `Pickarr_core` pipeline modules (owner: core stream)
 
 ```ocaml
 (* lib/core/filter.ml — Stage 2: deterministic hard rules, pure *)
@@ -218,7 +218,7 @@ module Rules_proposal : sig
 end
 ```
 
-### `Selectarr_server` (owner: server stream)
+### `Pickarr_server` (owner: server stream)
 
 Routes (all JSON unless noted):
 
@@ -261,7 +261,7 @@ config on startup (`Config.apply_env`).
 Priority order (highest first):
 
 1. Sonarr/Radarr hard rejection
-2. Selectarr hard rules
+2. Pickarr hard rules
 3. explicit structured preferences
 4. natural-language preferences
 5. deterministic scoring
@@ -269,12 +269,12 @@ Priority order (highest first):
 
 ## Automatic mode
 
-See `docs/API_RESEARCH.md` §6 for the verified options. Design: Selectarr
+See `docs/API_RESEARCH.md` §6 for the verified options. Design: Pickarr
 polls `wanted/missing` (and optionally `wanted/cutoff`) per instance on an
 interval, skips items already in the queue or grabbed recently, runs the
 pipeline and grabs when `auto_grab` is on. Sonarr/Radarr's own automatic
 search/RSS must be disabled by the user (or via a Prowlarr sync profile) for
-Selectarr to be the decision-maker; Selectarr never uses the
+Pickarr to be the decision-maker; Pickarr never uses the
 `EpisodeSearch`/`MoviesSearch` commands because those make Sonarr/Radarr grab
 on their own. Webhooks (SeriesAdd/MovieAdded/DownloadFailed/...) trigger an
 immediate pass for the affected item.

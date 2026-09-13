@@ -1,4 +1,4 @@
-(* Selectarr configuration.
+(* Pickarr configuration.
 
    The configuration is persisted as JSON (see [to_yojson] / [of_yojson]) and
    may be seeded/overridden from environment variables (see

@@ -1,4 +1,4 @@
-# Selectarr API Research — Sonarr v4 (`/api/v3`), Radarr 5.x (`/api/v3`), OpenAI chat completions
+# Pickarr API Research — Sonarr v4 (`/api/v3`), Radarr 5.x (`/api/v3`), OpenAI chat completions
 
 **Purpose:** implementation-ready reference for writing typed OCaml clients. Every field name, type and
 nullability below is transcribed from a primary source that was read during this research run.
@@ -123,7 +123,7 @@ Enums referenced here [VERIFIED, both specs]:
 
 **Practical connectivity test.** `GET {base}/api/v3/system/status` with `X-Api-Key`. Treat
 `appName` (`"Sonarr"` / `"Radarr"`) as the app discriminator, `version` as the version string, and
-`instanceName` as the user-facing label to show in Selectarr's UI/logs. A wrong key yields HTTP 401
+`instanceName` as the user-facing label to show in Pickarr's UI/logs. A wrong key yields HTTP 401
 [INFERRED — the spec documents only a `200` response for this path; the 401 behaviour is standard for the
 declared `apiKey` security scheme and is not literally in the vendored files].
 
@@ -158,7 +158,7 @@ public async Task<List<ReleaseResource>> GetReleases(int? seriesId, int? episode
   `_releaseSearchService.SeasonSearch(seriesId, seasonNumber, false, false, true, true)` — i.e.
   `missingOnly: false, monitoredOnly: false, userInvokedSearch: true, interactiveSearch: true`.
 - **Gotcha:** `?seriesId=N` *alone* (without `seasonNumber`) does **not** search the series — it falls
-  through to `GetRss()`, which fetches and decides the whole RSS feed. Selectarr must never send
+  through to `GetRss()`, which fetches and decides the whole RSS feed. Pickarr must never send
   `seriesId` without `seasonNumber`. [VERIFIED from the code above]
 - No arguments at all → `GetRss()` (full RSS fetch + decisions). Slow and not what you want.
 
@@ -179,7 +179,7 @@ public async Task<List<ReleaseResource>> GetReleases(int? movieId)
 Both controllers map errors as: `SearchFailedException` → **400**, any other exception → **500**
 (`"Episode search failed: …"` / `"Movie search failed: …"`). [VERIFIED, both `*-ReleaseController.cs`]
 
-### 2.2 These are *interactive* searches — the single most important fact for Selectarr
+### 2.2 These are *interactive* searches — the single most important fact for Pickarr
 
 `ISearchForReleases.EpisodeSearch(int episodeId, bool userInvokedSearch, bool interactiveSearch)`
 `verified: vendor/sonarr-ReleaseSearchService.cs`; Radarr's is
@@ -207,7 +207,7 @@ indexers = indexers.Where(i => i.Definition.Tags.Empty()
 3. Indexer *tags* filter the search: an indexer with tags only participates if it shares a tag with the
    series/movie.
 4. `Dispatch` also updates `LastSearchTime` on the episode(s)/movie if ≥1 indexer was searched — so
-   Selectarr's searches are visible in `episode.lastSearchTime` / `movie.lastSearchTime`.
+   Pickarr's searches are visible in `episode.lastSearchTime` / `movie.lastSearchTime`.
 
 This is the mechanism that makes "sidecar-driven" mode possible (§6).
 
@@ -547,7 +547,7 @@ Id `11` is commented out in the source (`HDTV-480p`) and does not exist.
 Ids `11` and `13` do not exist in Radarr.
 
 **Quality IDs are NOT portable across apps.** E.g. id `20` is `Bluray-1080p Remux` in Sonarr but
-`Bluray-480p` in Radarr; id `2` (`DVD`) has resolution `480` in Sonarr and `0` in Radarr. Selectarr must
+`Bluray-480p` in Radarr; id `2` (`DVD`) has resolution `480` in Sonarr and `0` in Radarr. Pickarr must
 key quality tables per-app. [VERIFIED by comparing the two tables above]
 
 ### 2.7 Codec and audio are **not** provided — confirmed
@@ -570,7 +570,7 @@ What you *do* get that is semi-structured:
 - `indexerFlags` (freeleech, internal, scene, …).
 
 Everything else — video codec (x264/x265/AV1), audio codec (DTS-HD MA, TrueHD, Atmos, EAC3), channel
-count, HDR10/DV, bit depth — **must be parsed from `title`** by Selectarr. [VERIFIED by absence]
+count, HDR10/DV, bit depth — **must be parsed from `title`** by Pickarr. [VERIFIED by absence]
 
 For contrast, media-info *is* available for already-imported files, not for releases: Sonarr's
 `EpisodeFileResource.mediaInfo : MediaInfoResource` and Radarr's `MovieFileResource.mediaInfo` expose
@@ -933,7 +933,7 @@ prior search.
 
 `verified: vendor/sonarr-ReleaseController.cs`, `verified: vendor/radarr-ReleaseController.cs`.
 
-**Selectarr guidance:** because Selectarr searched by `episodeId` / `movieId`, the mapping is already
+**Pickarr guidance:** because Pickarr searched by `episodeId` / `movieId`, the mapping is already
 resolved server-side, so the plain `{guid, indexerId}` body normally suffices. Include
 `episodeId`/`movieId` as a cheap safety net for unmapped releases, and reserve `shouldOverride` for an
 explicit user "force grab" action.
@@ -982,9 +982,9 @@ if (remoteEpisode == null)
   `ICacheManager`/`ICached<T>` being an in-memory cache; no persistence code is present in the vendored
   controller].
 
-**Selectarr design rule (important):** the search→select→grab round trip must complete **well inside 30
+**Pickarr design rule (important):** the search→select→grab round trip must complete **well inside 30
 minutes**, and must reuse the exact `guid` and `indexerId` from the search response. If an LLM call is
-slow, or a user approves a suggestion later, Selectarr must **re-run `GET /api/v3/release` immediately
+slow, or a user approves a suggestion later, Pickarr must **re-run `GET /api/v3/release` immediately
 before `POST`** and re-match its chosen release by `guid`; if the guid is gone, surface "release no longer
 available, re-select".
 
@@ -1008,7 +1008,7 @@ Additional exceptions that propagate out of `DownloadService.DownloadReport` and
 `ReleaseDownloadException` by the controller: `DownloadClientUnavailableException` (no client configured
 for the protocol), `ReleaseUnavailableException`, `ReleaseBlockedException` (previously blocklisted),
 `DownloadClientRejectedReleaseException` (duplicate). `verified: vendor/sonarr-DownloadService.cs`. Their
-HTTP mapping is [UNVERIFIED] (the global exception handler was not vendored) — Selectarr should treat any
+HTTP mapping is [UNVERIFIED] (the global exception handler was not vendored) — Pickarr should treat any
 non-200 as a failed grab and log the body.
 
 ### 3.6 Grabbing ignores rejections, quality profile and custom-format score — confirmed
@@ -1096,7 +1096,7 @@ Note: `GET /api/v3/episode/{id}` has **only** the `id` path parameter — `inclu
 | `images` | `MediaCover[]` | yes |
 
 `lastSearchTime`, `grabDate`, `endTime`, `finaleType` are worth noting — they are not in the brief but are
-directly useful: `lastSearchTime` lets Selectarr rate-limit its own re-searching, `grabDate` indicates a
+directly useful: `lastSearchTime` lets Pickarr rate-limit its own re-searching, `grabDate` indicates a
 pending grab.
 
 **`EpisodeFileResource`** [VERIFIED, `vendor/sonarr-openapi.json`]:
@@ -1232,7 +1232,7 @@ Also available: `GET /api/v3/wanted/missing/{id}` and `GET /api/v3/wanted/cutoff
 `SortDirection`: `"default" | "ascending" | "descending"` [VERIFIED, both apps].
 
 `monitored` defaults to `true`, i.e. by default these endpoints only return monitored items — which is
-exactly what Selectarr wants. `sortKey` is a free-form string (the spec does not enumerate valid keys);
+exactly what Pickarr wants. `sortKey` is a free-form string (the spec does not enumerate valid keys);
 valid values are [UNVERIFIED] — safest is to omit `sortKey` and rely on the default ordering, or use
 `airDateUtc` for Sonarr / `title` for Radarr and verify against a live instance.
 
@@ -1440,7 +1440,7 @@ not vendored.]
 | `includeCustomFormatWhenRenaming` | bool | **yes** |
 | `specifications` | `CustomFormatSpecificationSchema[]` | yes |
 
-**Important for Selectarr:** the `customFormats` array embedded in a `ReleaseResource` is produced by
+**Important for Pickarr:** the `customFormats` array embedded in a `ReleaseResource` is produced by
 `remoteEpisode.CustomFormats?.ToResource(false)` / `remoteMovie.CustomFormats.ToResource(false)`
 (`verified: vendor/sonarr-ReleaseResource.cs`, `vendor/radarr-ReleaseResource.cs`). The `false` argument
 suppresses the heavy part, so in a release payload you should expect `id` + `name` populated and
@@ -1485,7 +1485,7 @@ configuration, not a constant.
 
 ## 6. Automatic mode — how a sidecar can take over release selection
 
-This section is the heart of the Selectarr design question. I have split it strictly into
+This section is the heart of the Pickarr design question. I have split it strictly into
 **[VERIFIED]** mechanics and **design recommendation**.
 
 ### 6.1 Webhooks — configuration and event set
@@ -1724,7 +1724,7 @@ Radarr equivalents [VERIFIED, `vendor/radarr-webhook/WebhookBase.cs`]: `Download
     "images": [
       { "coverType": "poster", "url": "/MediaCover/42/poster.jpg", "remoteUrl": "https://artworks.thetvdb.com/banners/posters/123456-1.jpg" }
     ],
-    "tags": [ "4k", "selectarr" ],
+    "tags": [ "4k", "pickarr" ],
     "originalLanguage": { "id": 1, "name": "English" }
   },
   "episodes": [
@@ -1872,7 +1872,7 @@ Verified literals: movie `Id = 1`, `Title = "Test Title"`, `Year = 1970`, `Folde
 `Title = "Test title"`, `Year = 1970`; release `Indexer = "Test Indexer"`, `Quality = "Test Quality"`,
 `QualityVersion = 1`, `ReleaseGroup = "Test Group"`, `ReleaseTitle = "Test Title"`, `Size = 9999999`.
 
-**Selectarr should use the Test payload to validate its webhook endpoint** — but note the payloads are
+**Pickarr should use the Test payload to validate its webhook endpoint** — but note the payloads are
 heavily null-populated, so the decoder must tolerate nulls everywhere.
 
 ### 6.3 Is there a pre-grab event, and can it veto? **No.** [VERIFIED]
@@ -1913,8 +1913,8 @@ Therefore:
 - There is **no** `OnBeforeGrab`, `OnReleaseDecision`, or any veto/approval hook anywhere in the vendored
   notification surface. The `WebhookEventType` enums in §6.1 are the complete event sets.
 
-**Conclusion: you cannot implement "let Selectarr approve each grab" via webhooks.** The only way for
-Selectarr to control *which* release is taken is to be the one that calls `POST /api/v3/release` — which
+**Conclusion: you cannot implement "let Pickarr approve each grab" via webhooks.** The only way for
+Pickarr to control *which* release is taken is to be the one that calls `POST /api/v3/release` — which
 means Sonarr/Radarr's own automatic grabbing must be prevented from racing it (§6.4).
 
 ### 6.4 Can automatic search be disabled while keeping monitoring? Yes — via per-indexer flags
@@ -1969,8 +1969,8 @@ verified, the sentinel semantics are not in any vendored file. See
 | --- | --- | --- | --- |
 | **Per-indexer `enableAutomaticSearch = false` + `enableRss = false`, keep `enableInteractiveSearch = true`** | App's own automatic search and RSS never see the indexer; `GET /api/v3/release` still works fully | **[VERIFIED]** — §2.2 `Dispatch` + `IndexerResource` fields | **Recommended.** The only option that cleanly separates "app grabs" from "sidecar searches" |
 | Global `rssSyncInterval = 0` | Stops RSS sync app-wide | field [VERIFIED], `0`-disables [UNVERIFIED] | Blunt; also kills RSS for anything you *do* want automatic. Use per-indexer `enableRss` instead |
-| Unmonitor the series/movie | Stops all automatic activity | — | **Breaks the sidecar**: `wanted/missing` and `wanted/cutoff` default to `monitored=true`, so unmonitored items disappear from Selectarr's own work queue. Also disables `episodeRequested`/`movieRequested` semantics. **Do not use** |
-| Quality profile with all qualities disallowed | Automatic grabs rejected | [INFERRED] | Poor: it also makes every release `rejected` in search output, destroying the `approved`/`rejections` signal Selectarr wants to read, and `cutoff` must reference an allowed quality. **Not recommended** |
+| Unmonitor the series/movie | Stops all automatic activity | — | **Breaks the sidecar**: `wanted/missing` and `wanted/cutoff` default to `monitored=true`, so unmonitored items disappear from Pickarr's own work queue. Also disables `episodeRequested`/`movieRequested` semantics. **Do not use** |
+| Quality profile with all qualities disallowed | Automatic grabs rejected | [INFERRED] | Poor: it also makes every release `rejected` in search output, destroying the `approved`/`rejections` signal Pickarr wants to read, and `cutoff` must reference an allowed quality. **Not recommended** |
 | Very high `minFormatScore` | Automatic grabs rejected, manual grab still allowed | manual-grab-still-allowed is **[VERIFIED]** (§3.6) | Works as a *belt-and-braces* addition, see §6.5. Side effect: everything shows as `rejected` |
 
 **Key insight, verified:** `enableAutomaticSearch` and `enableInteractiveSearch` are *independent*
@@ -1980,7 +1980,7 @@ configuration is:
 ```
 per indexer:  enableRss = false
               enableAutomaticSearch = false
-              enableInteractiveSearch = true      <-- Selectarr still gets results
+              enableInteractiveSearch = true      <-- Pickarr still gets results
 series/movie: monitored = true                    <-- so wanted/* still lists it
 ```
 
@@ -2006,11 +2006,11 @@ Prowlarr source or documentation was vendored for this run, so I cannot state:
 - `https://github.com/Prowlarr/Prowlarr/tree/develop/src/NzbDrone.Core/Applications` (the
   `SonarrV3`/`RadarrV3` application classes contain the field-mapping logic)
 
-**Mitigation Selectarr should implement regardless [design recommendation]:** treat the indexer flags as
+**Mitigation Pickarr should implement regardless [design recommendation]:** treat the indexer flags as
 *desired state*. On every polling cycle, `GET /api/v3/indexer`, and if any indexer has
-`enableAutomaticSearch == true` or `enableRss == true` while Selectarr is in sidecar-driven mode, either
+`enableAutomaticSearch == true` or `enableRss == true` while Pickarr is in sidecar-driven mode, either
 (a) re-apply the desired state with `PUT`, or (b) raise a visible warning "Prowlarr has re-enabled
-automatic search on indexer X; Selectarr and Sonarr may race". Option (a) is a reconciliation loop and is
+automatic search on indexer X; Pickarr and Sonarr may race". Option (a) is a reconciliation loop and is
 the robust choice.
 
 ### 6.5 The `minFormatScore` / custom-format approach
@@ -2029,7 +2029,7 @@ the robust choice.
 
 **Assessment.** It works, but it is a *side-effecting* hack: every release in every search result becomes
 `"rejected": true` with a `minFormatScore` rejection message, which destroys the `approved` /
-`rejections` / `downloadAllowed` signal that Selectarr would otherwise want to use as input to its own
+`rejections` / `downloadAllowed` signal that Pickarr would otherwise want to use as input to its own
 scoring. Prefer the indexer-flag approach (§6.4) and use `minFormatScore` only as an optional
 "paranoid mode" for users whose Prowlarr keeps resetting indexer flags.
 
@@ -2132,7 +2132,7 @@ Radarr [VERIFIED]: `id`, `movieId: int32`, `sourceTitle`, `languages`, `quality`
 `data` is a string→string dictionary. For a `grabbed` row it carries the release `guid`, `nzbInfoUrl`,
 `protocol` etc. — this is exactly how Radarr's own `AddHistory` correlates history to releases
 (`h.Data.TryGetValue("guid", out var guid)`, `h.Data.GetValueOrDefault("protocol")`);
-`verified: vendor/radarr-ReleaseController.cs`. **Selectarr can use the same trick: read
+`verified: vendor/radarr-ReleaseController.cs`. **Pickarr can use the same trick: read
 `data["guid"]` from `grabbed` history rows to know whether a specific release guid was already taken.**
 The full set of `data` keys is **[UNVERIFIED]** (`HistoryService`/`*History.cs` not vendored) — only
 `guid`, `nzbInfoUrl` and `protocol` are verified to exist.
@@ -2202,7 +2202,7 @@ Confirm at `https://wiki.servarr.com/sonarr/api` / `https://wiki.servarr.com/rad
 `src/NzbDrone.Core/IndexerSearch/*Command.cs`
 (e.g. `https://github.com/Sonarr/Sonarr/blob/develop/src/NzbDrone.Core/IndexerSearch/EpisodeSearchCommand.cs`).
 
-**⚠️ Critical warning for Selectarr — do not use these commands in sidecar-driven mode.**
+**⚠️ Critical warning for Pickarr — do not use these commands in sidecar-driven mode.**
 
 All of the `*Search` commands and `RssSync` run **Sonarr/Radarr's own decision engine and grab the
 winner themselves**. Evidence: the non-interactive search path goes through
@@ -2214,7 +2214,7 @@ choice (§6.3).
 
 So:
 
-- If Selectarr wants to pick the release itself → **never** issue `EpisodeSearch`, `SeriesSearch`,
+- If Pickarr wants to pick the release itself → **never** issue `EpisodeSearch`, `SeriesSearch`,
   `SeasonSearch`, `MoviesSearch`, `MissingEpisodeSearch`, `MissingMoviesSearch`, `CutoffUnmetEpisodeSearch`
   or `RssSync`. Use `GET /api/v3/release` (which is interactive and does **not** grab) followed by
   `POST /api/v3/release`.
@@ -2222,27 +2222,27 @@ So:
   `RescanSeries`, `RenameFiles`, etc. [command names here are [UNVERIFIED], same caveat as above].
 - `GET /api/v3/command/{id}` + `status`/`result` is how you await completion if you do use one.
 
-### 6.8 Recommended Selectarr design
+### 6.8 Recommended Pickarr design
 
 Three modes. I state explicitly which parts are verified mechanics and which are my design proposal.
 
 #### Mode 1 — "advisory" (safest, no configuration changes)
 
-Sonarr/Radarr keep grabbing automatically exactly as today. Selectarr only acts when a human asks.
+Sonarr/Radarr keep grabbing automatically exactly as today. Pickarr only acts when a human asks.
 
-- Trigger: a user request in Selectarr's UI, or a webhook `eventType: "SeriesAdd"` / `"MovieAdded"` used
+- Trigger: a user request in Pickarr's UI, or a webhook `eventType: "SeriesAdd"` / `"MovieAdded"` used
   purely as a *notification* to offer a suggestion.
 - Flow: `GET /api/v3/release?episodeId=…` (or `?movieId=…`) → hard rules + scoring → optional LLM →
   present ranked list → on user confirm, `POST /api/v3/release {guid, indexerId}`.
-- Risk: Sonarr/Radarr may grab something first, or grab an upgrade later that overrides Selectarr's pick.
+- Risk: Sonarr/Radarr may grab something first, or grab an upgrade later that overrides Pickarr's pick.
   Accept this; it is inherent to leaving automation on.
 - **Verified enablers:** `GET`/`POST /api/v3/release` semantics (§2, §3); 30-minute cache (§3.4);
   rejections are non-binding on grab (§3.6).
 
-#### Mode 2 — "sidecar-driven" (Selectarr owns selection) — **recommended default for the product's purpose**
+#### Mode 2 — "sidecar-driven" (Pickarr owns selection) — **recommended default for the product's purpose**
 
-**Setup (one-time, ideally automated by Selectarr with explicit user consent):** for each indexer that
-Selectarr should own, `PUT /api/v3/indexer/{id}` with
+**Setup (one-time, ideally automated by Pickarr with explicit user consent):** for each indexer that
+Pickarr should own, `PUT /api/v3/indexer/{id}` with
 
 ```
 enableRss              = false
@@ -2271,7 +2271,7 @@ load-bearing fact and it is directly verified in both apps' `ReleaseSearchServic
    already grabbed unless a later `downloadFailed` row exists for the same `downloadId`. Radarr users get
    this for free per-release via `ReleaseResource.history` (§2.4).
 4. **Rate-limit.** Respect `episode.lastSearchTime` / `movie.lastSearchTime` (verified to be updated by
-   every search, §2.2) and keep a Selectarr-side cooldown per item. Note `DownloadService` itself
+   every search, §2.2) and keep a Pickarr-side cooldown per item. Note `DownloadService` itself
    rate-limits grabs to one per 2 seconds per download host (verified) — do not fight it.
 5. **Search.** `GET /api/v3/release?episodeId=N` (single), `?seriesId=N&seasonNumber=M` (season pack), or
    `?movieId=N`. **Never** `?seriesId=` alone (§2.1).
@@ -2291,14 +2291,14 @@ load-bearing fact and it is directly verified in both apps' `ReleaseSearchServic
 
 #### Mode 3 — webhook-assisted triggers (an optimisation layered on Mode 1 or 2)
 
-Register a Webhook notification pointing at Selectarr with `onSeriesAdd`/`onMovieAdded`,
-`onGrab`, `onDownload`, `onHealthIssue`, and `onManualInteractionRequired` enabled, so Selectarr reacts
+Register a Webhook notification pointing at Pickarr with `onSeriesAdd`/`onMovieAdded`,
+`onGrab`, `onDownload`, `onHealthIssue`, and `onManualInteractionRequired` enabled, so Pickarr reacts
 in seconds instead of waiting for its poll interval.
 
 - `"SeriesAdd"` / `"MovieAdded"` → enqueue an immediate selection pass for the new item.
 - `"Download"` → mark the item satisfied; cancel any pending selection. Remember to disambiguate
   per-file import vs import-complete by payload shape, and to read `isUpgrade` (§6.1).
-- `"Grab"` → **audit only.** If Selectarr did not initiate it, this proves something else grabbed
+- `"Grab"` → **audit only.** If Pickarr did not initiate it, this proves something else grabbed
   (mis-configured indexer flags, or Prowlarr reset them) → raise the reconciliation warning.
 - `"ManualInteractionRequired"` → surface to the user.
 - `"Test"` → validate the endpoint; expect the heavily-null payload of §6.2.
@@ -2350,7 +2350,7 @@ Field notes (all [UNVERIFIED]):
   `max_tokens` remains the portable choice for local servers.
 - `response_format: { "type": "json_object" }` — JSON mode. See §7.3 for support caveats.
   (`{"type": "json_schema", "json_schema": {...}}` = Structured Outputs, much less portable.)
-- `stream` — bool. Selectarr should send `false` (or omit) and use non-streaming parsing.
+- `stream` — bool. Pickarr should send `false` (or omit) and use non-streaming parsing.
 - `seed`, `top_p`, `stop`, `n`, `presence_penalty`, `frequency_penalty` — optional, variable support.
 
 Check: `https://platform.openai.com/docs/api-reference/chat/create`
@@ -2378,7 +2378,7 @@ Check: `https://platform.openai.com/docs/api-reference/chat/create`
 
 - Text is at `choices[0].message.content` (a **string**).
 - `finish_reason` ∈ `"stop" | "length" | "content_filter" | "tool_calls" | "function_call"`.
-  **Selectarr must treat `"length"` as a failure** — a truncated JSON object will not parse.
+  **Pickarr must treat `"length"` as a failure** — a truncated JSON object will not parse.
 - `usage` ∈ `{ prompt_tokens, completion_tokens, total_tokens }` (OpenAI adds
   `prompt_tokens_details` / `completion_tokens_details`; local servers often omit `usage` entirely, so
   make it optional).
@@ -2440,7 +2440,7 @@ ignored but many clients must send a non-empty `Authorization` header, so send `
 and several optional response fields may be absent or zeroed. Check
 `https://github.com/ollama/ollama/blob/main/docs/openai.md`.
 
-**Selectarr guidance:** normalise the configured base URL (strip a trailing `/`, append `/v1` only if the
+**Pickarr guidance:** normalise the configured base URL (strip a trailing `/`, append `/v1` only if the
 user did not already provide a path), and log the full request URL once at startup — misconfigured
 `base_url` is by far the most common failure mode.
 
@@ -2514,7 +2514,7 @@ user did not already provide a path), and log the full request URL once at start
    `src/NzbDrone.Core/History/EpisodeHistory.cs` / `MovieHistory.cs`. Workaround in §6.6.
 2. **Command request payloads** (`EpisodeSearch`, `MoviesSearch`, `RssSync`, …) — names are model
    knowledge; the OpenAPI `CommandResource` cannot express them. Check
-   `src/NzbDrone.Core/IndexerSearch/*Command.cs` and the wiki. (Selectarr should not use the search ones
+   `src/NzbDrone.Core/IndexerSearch/*Command.cs` and the wiki. (Pickarr should not use the search ones
    anyway — §6.7.)
 3. **Prowlarr sync behaviour** — whether Full Sync overwrites `enableRss` /
    `enableAutomaticSearch` / `enableInteractiveSearch`, and whether a sync profile can preserve them.

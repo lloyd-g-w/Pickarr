@@ -1,12 +1,12 @@
 (lang dune 3.0)
-(name selectarr)
+(name pickarr)
 (generate_opam_files true)
 
 (package
- (name selectarr)
+ (name pickarr)
  (synopsis "AI-assisted release selector sidecar for Sonarr and Radarr")
  (description
-  "Selectarr asks Sonarr/Radarr for candidate releases, applies deterministic hard rules and scoring, optionally asks an OpenAI-compatible LLM to make the final pick, and then tells Sonarr/Radarr to grab it.")
+  "Pickarr asks Sonarr/Radarr for candidate releases, applies deterministic hard rules and scoring, optionally asks an OpenAI-compatible LLM to make the final pick, and then tells Sonarr/Radarr to grab it.")
  (depends
   (ocaml (>= 5.1))
   dune

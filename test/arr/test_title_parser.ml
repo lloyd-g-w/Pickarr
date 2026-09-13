@@ -1,6 +1,6 @@
-(* Tests for Selectarr_core.Title_parser. *)
+(* Tests for Pickarr_core.Title_parser. *)
 
-module TP = Selectarr_core.Title_parser
+module TP = Pickarr_core.Title_parser
 
 let opt_string = Alcotest.(check (option string))
 let opt_int = Alcotest.(check (option int))

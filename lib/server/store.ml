@@ -2,14 +2,14 @@
    history log.
 
    Layout inside [DATA_DIR]:
-     config.json    the full [Selectarr_core.Config.t]
+     config.json    the full [Pickarr_core.Config.t]
      history.jsonl  one JSON object per selection, newest last
 
    Writes are atomic (temp file + rename) and serialised through an
    [Lwt_mutex]. *)
 
-module Config = Selectarr_core.Config
-module Types = Selectarr_core.Types
+module Config = Pickarr_core.Config
+module Types = Pickarr_core.Types
 
 type t = {
   data_dir : string;

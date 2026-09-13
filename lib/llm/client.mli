@@ -3,7 +3,7 @@
     Works against api.openai.com as well as self-hosted servers that
     implement the same shape (llama.cpp server, Ollama's OpenAI endpoint,
     vLLM, LM Studio, OpenRouter, ...).  Only the chat-completions call is
-    implemented; Selectarr needs nothing else. *)
+    implemented; Pickarr needs nothing else. *)
 
 type error =
   | Disabled  (** AI selection is off, or no model/base URL configured. *)
@@ -19,7 +19,7 @@ type error =
 val error_to_string : error -> string
 
 val chat_json :
-  Selectarr_core.Config.llm ->
+  Pickarr_core.Config.llm ->
   system:string ->
   user:string ->
   (Yojson.Safe.t, error) result Lwt.t
@@ -32,7 +32,7 @@ val chat_json :
     and decoding problems become [Error]. *)
 
 val chat_text :
-  Selectarr_core.Config.llm ->
+  Pickarr_core.Config.llm ->
   system:string ->
   user:string ->
   (string, error) result Lwt.t
@@ -50,7 +50,7 @@ val chat_completions_url : string -> string
     OpenAI-compatible server mounts the API under a version prefix). *)
 
 val build_request_body :
-  Selectarr_core.Config.llm -> system:string -> user:string -> json_mode:bool -> Yojson.Safe.t
+  Pickarr_core.Config.llm -> system:string -> user:string -> json_mode:bool -> Yojson.Safe.t
 (** The [/chat/completions] request body. *)
 
 val extract_json : string -> (Yojson.Safe.t, string) result

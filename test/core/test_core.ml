@@ -1,14 +1,14 @@
-(* Tests for the Selectarr selection pipeline (lib/core). *)
+(* Tests for the Pickarr selection pipeline (lib/core). *)
 
-module Types = Selectarr_core.Types
-module Config = Selectarr_core.Config
-module Filter = Selectarr_core.Filter
-module Scoring = Selectarr_core.Scoring
-module Prompt = Selectarr_core.Prompt
-module Llm_response = Selectarr_core.Llm_response
-module Explain = Selectarr_core.Explain
-module Pipeline = Selectarr_core.Pipeline
-module Rules_proposal = Selectarr_core.Rules_proposal
+module Types = Pickarr_core.Types
+module Config = Pickarr_core.Config
+module Filter = Pickarr_core.Filter
+module Scoring = Pickarr_core.Scoring
+module Prompt = Pickarr_core.Prompt
+module Llm_response = Pickarr_core.Llm_response
+module Explain = Pickarr_core.Explain
+module Pipeline = Pickarr_core.Pipeline
+module Rules_proposal = Pickarr_core.Rules_proposal
 
 (* ------------------------------------------------------------------------ *)
 (* Fixtures                                                                  *)
@@ -1178,7 +1178,7 @@ let test_rules_proposal_prompt () =
 (* ------------------------------------------------------------------------ *)
 
 let () =
-  Alcotest.run "selectarr-core"
+  Alcotest.run "pickarr-core"
     [
       ( "filter",
         [

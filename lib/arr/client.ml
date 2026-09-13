@@ -1,7 +1,7 @@
 (* App-agnostic facade over the Sonarr and Radarr APIs.  See client.mli. *)
 
-module C = Selectarr_core.Config
-module T = Selectarr_core.Types
+module C = Pickarr_core.Config
+module T = Pickarr_core.Types
 
 type t = { inst : C.instance }
 type error = Http.error

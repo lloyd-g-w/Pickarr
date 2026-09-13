@@ -1,6 +1,6 @@
 (* OpenAI-compatible chat-completions client.  See client.mli. *)
 
-module C = Selectarr_core.Config
+module C = Pickarr_core.Config
 
 type error =
   | Disabled

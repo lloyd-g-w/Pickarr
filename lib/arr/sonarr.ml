@@ -315,10 +315,12 @@ let releases_for_season ~base_url ~api_key ~series_id ~season_number =
 
 (** [POST /api/v3/release] — tells Sonarr to grab a release it has already
     offered us.  The release must still be in Sonarr's 30-minute remote
-    episode cache, keyed by [indexerId ^ "_" ^ guid]. *)
+    episode cache, keyed by [indexerId ^ "_" ^ guid].
+
+    Sonarr echoes the posted resource back, but the grab has happened as soon
+    as the status is 2xx, so the body is deliberately not parsed. *)
 let grab ~base_url ~api_key body =
-  let* r = Http.post ~base_url ~api_key "/api/v3/release" body in
-  Lwt.return (map_result (fun _ -> ()) r)
+  Http.post_unit ~base_url ~api_key "/api/v3/release" body
 
 (** [GET /api/v3/wanted/missing] or [GET /api/v3/wanted/cutoff]. *)
 let wanted ~base_url ~api_key ~kind ~page ~page_size =

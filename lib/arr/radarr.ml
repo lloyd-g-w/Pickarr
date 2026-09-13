@@ -222,10 +222,12 @@ let releases_for_movie ~base_url ~api_key movie_id =
 
 (** [POST /api/v3/release] — grab a release Radarr has already offered us.
     The release must still be in Radarr's remote movie cache, keyed by
-    [indexerId ^ "_" ^ guid]. *)
+    [indexerId ^ "_" ^ guid].
+
+    Radarr echoes the posted resource back, but the grab has happened as soon
+    as the status is 2xx, so the body is deliberately not parsed. *)
 let grab ~base_url ~api_key body =
-  let* r = Http.post ~base_url ~api_key "/api/v3/release" body in
-  Lwt.return (map_result (fun _ -> ()) r)
+  Http.post_unit ~base_url ~api_key "/api/v3/release" body
 
 (** [GET /api/v3/wanted/missing] or [GET /api/v3/wanted/cutoff]. *)
 let wanted ~base_url ~api_key ~kind ~page ~page_size =

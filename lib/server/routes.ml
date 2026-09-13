@@ -336,6 +336,8 @@ let selection_error_response (e : Selection.error) =
   | Selection.Instance_not_found id ->
       error_json `Not_Found (Printf.sprintf "no instance \"%s\" is configured" id)
   | Selection.Media_not_found m -> error_json `Not_Found m
+  | Selection.Release_not_found m -> error_json `Not_Found m
+  | Selection.Release_rejected m -> error_json `Conflict m
   | Selection.Arr_error m -> error_json `Bad_Gateway m
 
 let parse_options request =
@@ -364,6 +366,30 @@ let media_id_param request name =
   | _ ->
       Error
         (Printf.sprintf "\"%s\" must be a positive integer" (Dream.param request name))
+
+(* Grab one specific candidate rather than the pipeline's winner: the Select
+   page puts a Grab button on every candidate row.  The release id comes from
+   a previous selection response; the server re-searches before grabbing
+   because Sonarr/Radarr only accept releases from the last search. *)
+let grab_specific_release (state : App_state.t) request =
+  let* body = json_body request in
+  match body with
+  | Error e -> error_json `Bad_Request e
+  | Ok body -> (
+      match media_id_param request "media_id" with
+      | Error e -> error_json `Bad_Request e
+      | Ok media_id -> (
+          match Selection.release_id_of_json body with
+          | Error e -> error_json `Bad_Request e
+          | Ok release_id -> (
+              let instance_id = Dream.param request "instance_id" in
+              let* result =
+                Selection.grab_release_on_instance_id state ~instance_id ~media_id
+                  ~release_id
+              in
+              match result with
+              | Error e -> selection_error_response e
+              | Ok result -> respond_json (Types.selection_result_to_yojson result))))
 
 (* ------------------------------------------------------------------ *)
 (* Handlers                                                            *)
@@ -733,6 +759,8 @@ let router (state : App_state.t) =
                      let instance_id = Dream.param request "instance_id" in
                      run_selection request (fun opts ->
                          Selection.run_on_instance_id state ~instance_id ~media_id opts)));
+          Dream.post "/grab/:instance_id/:media_id"
+            (guard "POST /api/grab/:instance_id/:media_id" (grab_specific_release state));
           Dream.get "/history" (guard "GET /api/history" (get_history state));
           Dream.get "/logs" (guard "GET /api/logs" (get_logs state));
           Dream.get "/wanted/:instance_id" (guard "GET /api/wanted" (get_wanted state));

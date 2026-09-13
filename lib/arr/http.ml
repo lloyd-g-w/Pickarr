@@ -86,9 +86,12 @@ let with_timeout url (f : unit -> ('a, error) result Lwt.t) =
   in
   Lwt.pick [ f (); timer ]
 
-let decode_body url code body =
+let decode_body ?parse_error url code body =
   if code < 200 || code >= 300 then parse_error_body code body
-  else Json (Printf.sprintf "unexpected body from %s: %s" url (truncate 300 body))
+  else
+    Json
+      (Printf.sprintf "unexpected body from %s: %s%s" url (truncate 300 body)
+         (match parse_error with None -> "" | Some m -> " (" ^ m ^ ")"))
 
 (* Cohttp's default resolver maps the URI scheme to a port with
    getservbyname(3), i.e. /etc/services, which minimal container images do
@@ -105,7 +108,13 @@ let resolver =
 
 let ctx = lazy (Cohttp_lwt_unix.Net.init ~resolver ())
 
-let request ~meth ~url ~api_key ?body () : (Yojson.Safe.t, error) result Lwt.t =
+(* [ignore_body] controls what a 2xx body means.  Most endpoints need the
+   decoded JSON; for action endpoints such as POST /api/v3/release the status
+   code alone carries the outcome, and insisting on JSON would turn a
+   successful grab into a reported failure on any deployment whose body is
+   empty, plain text or rewritten by a proxy. *)
+let request ~meth ~url ~api_key ?body ?(ignore_body = false) () :
+    (Yojson.Safe.t, error) result Lwt.t =
   let uri = Uri.of_string url in
   with_timeout url (fun () ->
       Lwt.catch
@@ -117,12 +126,13 @@ let request ~meth ~url ~api_key ?body () : (Yojson.Safe.t, error) result Lwt.t =
           Cohttp_lwt.Body.to_string resp_body >>= fun text ->
           let code = Cohttp.Code.code_of_status (Cohttp.Response.status resp) in
           if code < 200 || code >= 300 then Lwt.return (Error (parse_error_body code text))
+          else if ignore_body then Lwt.return (Ok `Null)
           else if String.trim text = "" then Lwt.return (Ok `Null)
           else
             match Yojson.Safe.from_string text with
             | json -> Lwt.return (Ok json)
             | exception Yojson.Json_error m ->
-                Lwt.return (Error (decode_body url code m))
+                Lwt.return (Error (decode_body ~parse_error:m url code text))
             | exception _ -> Lwt.return (Error (Json ("could not parse response from " ^ url))))
         (fun exn -> Lwt.return (Error (describe_exn url exn))))
 
@@ -138,6 +148,11 @@ let get ~base_url ~api_key ?(query = []) path =
 
 let post ~base_url ~api_key path body =
   request ~meth:`POST ~url:(join base_url path) ~api_key ~body ()
+
+let post_unit ~base_url ~api_key path body =
+  Lwt.map
+    (function Ok (_ : Yojson.Safe.t) -> Ok () | Error e -> Error e)
+    (request ~meth:`POST ~url:(join base_url path) ~api_key ~body ~ignore_body:true ())
 
 let put ~base_url ~api_key path body =
   request ~meth:`PUT ~url:(join base_url path) ~api_key ~body ()

@@ -57,7 +57,8 @@
           Pickarr asks the instance for the releases available for one movie or
           episode, applies your hard rules, scores what is left and (when AI is
           enabled) asks the model to pick the winner. Nothing is grabbed unless
-          you press <em>Select &amp; grab</em>.
+          you press <em>Select &amp; grab</em> or the <em>Grab</em> button on a
+          candidate row. Searching the indexers can take several seconds.
         </p>
 
         <div class="row">
@@ -66,7 +67,11 @@
             <select id="select-instance"></select>
           </label>
           <label>
-            Media id <span class="hint-inline">(movie id for Radarr, episode id for Sonarr)</span>
+            Media id
+            <span class="hint-inline">
+              Radarr: the movie id from its URL. Sonarr: an <em>episode</em> id, not a
+              series id &mdash; use <em>Pick from wanted items</em> below to fill it in.
+            </span>
             <input id="select-media-id" type="number" min="1" placeholder="123" />
           </label>
         </div>

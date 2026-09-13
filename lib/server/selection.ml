@@ -24,6 +24,12 @@ type error =
   | Bad_request of string
   | Instance_not_found of string
   | Media_not_found of string
+  | Release_not_found of string
+      (** A grab-by-id request named a release the current search does not
+          offer (the indexers no longer return it, or the id is wrong). *)
+  | Release_rejected of string
+      (** The named release exists but a hard rule or Sonarr/Radarr rejected
+          it, so Pickarr must not grab it. *)
   | Arr_error of string
       (** The *arr instance could not be reached or returned an error. *)
 
@@ -31,6 +37,8 @@ let error_to_string = function
   | Bad_request m -> m
   | Instance_not_found id -> Printf.sprintf "unknown instance \"%s\"" id
   | Media_not_found m -> m
+  | Release_not_found m -> m
+  | Release_rejected m -> m
   | Arr_error m -> m
 
 let bool_of_json_value = function
@@ -90,6 +98,19 @@ let options_of_json ?(grab_query : string option) (body : Yojson.Safe.t) :
             fields;
           !result
       | _ -> Error "request body must be a JSON object")
+
+(** Parse the body of a grab-by-id request, [{"release_id":"..."}]. The id is
+    the [id] field of a release from a previous selection response. Pure, so
+    the rules can be unit tested. *)
+let release_id_of_json (body : Yojson.Safe.t) : (string, string) result =
+  let missing = "\"release_id\" must be a non-empty string" in
+  match body with
+  | `Assoc fields -> (
+      match List.assoc_opt "release_id" fields with
+      | Some (`String s) when String.trim s <> "" -> Ok (String.trim s)
+      | Some (`String _) | None -> Error missing
+      | Some _ -> Error missing)
+  | _ -> Error missing
 
 (** The LLM callback handed to the pipeline. Errors are flattened to strings
     so the pipeline can fall back to deterministic scoring. *)
@@ -164,6 +185,117 @@ let run ?(grab_allowed = fun (_ : Types.selection_result) -> true) (state : App_
               (Store.history_entry_of_result ~instance_id:inst.inst_id result)
           in
           Lwt.return (Ok result))
+
+(* ------------------------------------------------------------------ *)
+(* Grab one specific release                                           *)
+(* ------------------------------------------------------------------ *)
+
+(** Grab the candidate with id [release_id] instead of the pipeline's winner.
+
+    Sonarr/Radarr only accept a grab for a release from the most recent
+    search (their remote cache is keyed on [indexerId_guid] and expires after
+    30 minutes, see docs/API_RESEARCH.md "3.4"), so this re-runs the search
+    and then grabs, rather than trusting ids from an older response.
+
+    Only releases that survive the hard rules can be grabbed: the deterministic
+    rejections outrank any manual pick, exactly as in the automatic path. *)
+let grab_release (state : App_state.t) (inst : Config.instance) ~(media_id : int)
+    ~(release_id : string) : (Types.selection_result, error) result Lwt.t =
+  let cfg = App_state.config state in
+  let client = App_state.client state inst in
+  let ( let* ) = Lwt.bind in
+  let* media = Client.fetch_media client media_id in
+  match media with
+  | Error e ->
+      let msg =
+        Printf.sprintf "%s: could not load media %d: %s" inst.inst_name media_id
+          (Client.error_to_string e)
+      in
+      Lwt.return
+        (Error
+           (match e with
+           | Pickarr_arr.Http.Http_status (404, _) -> Media_not_found msg
+           | Pickarr_arr.Http.Http_status _ | Pickarr_arr.Http.Connection _
+           | Pickarr_arr.Http.Json _ ->
+               Arr_error msg))
+  | Ok media -> (
+      let* releases = Client.search_releases client media in
+      match releases with
+      | Error e ->
+          Lwt.return
+            (Error
+               (Arr_error
+                  (Printf.sprintf "%s: release search failed for %s: %s" inst.inst_name
+                     (Store.media_label media) (Client.error_to_string e))))
+      | Ok releases -> (
+          (* The pipeline gives the same candidate/rejected split the UI
+             showed, so the manual pick is validated against it. *)
+          let* result =
+            Pipeline.run ~config:cfg ~instance:(Some inst) ~media ~releases ~use_ai:false ()
+          in
+          let matches (s : Types.scored_release) = s.Types.scored.Types.id = release_id in
+          match List.find_opt matches result.Types.candidates with
+          | None -> (
+              let rejected =
+                List.find_opt
+                  (fun (r : Types.rejected_release) ->
+                    r.Types.release.Types.id = release_id)
+                  result.Types.rejected
+              in
+              match rejected with
+              | Some r ->
+                  let reasons =
+                    String.concat "; "
+                      (List.map (fun (x : Types.rejection) -> x.Types.message) r.Types.reasons)
+                  in
+                  Lwt.return
+                    (Error
+                       (Release_rejected
+                          (Printf.sprintf "%s cannot be grabbed: %s" r.Types.release.Types.title
+                             reasons)))
+              | None ->
+                  Lwt.return
+                    (Error
+                       (Release_not_found
+                          (Printf.sprintf
+                             "%s: no release with id \"%s\" is currently offered for %s \
+                              (search again and retry)"
+                             inst.inst_name release_id (Store.media_label media)))))
+          | Some chosen ->
+              let* grabbed = Client.grab client media chosen.Types.scored in
+              let result =
+                {
+                  result with
+                  Types.selected = Some chosen;
+                  reason =
+                    Printf.sprintf "%s was grabbed because you picked it directly"
+                      chosen.Types.scored.Types.title;
+                }
+              in
+              let result =
+                match grabbed with
+                | Ok () ->
+                    Log_buffer.infof "%s: grabbed %s for %s (picked by hand)" inst.inst_name
+                      chosen.Types.scored.Types.title (Store.media_label media);
+                    { result with Types.grabbed = true; grab_error = None }
+                | Error e ->
+                    let msg = Client.error_to_string e in
+                    Log_buffer.errorf "%s: grab failed for %s: %s" inst.inst_name
+                      chosen.Types.scored.Types.title msg;
+                    { result with Types.grabbed = false; grab_error = Some msg }
+              in
+              let* () =
+                Store.append_history state.store
+                  (Store.history_entry_of_result ~instance_id:inst.inst_id result)
+              in
+              Lwt.return (Ok result)))
+
+(** Resolve an instance by id and grab one specific release. *)
+let grab_release_on_instance_id (state : App_state.t) ~(instance_id : string)
+    ~(media_id : int) ~(release_id : string) =
+  match App_state.find_instance state instance_id with
+  | None -> Lwt.return (Error (Instance_not_found instance_id))
+  | Some inst -> grab_release state inst ~media_id ~release_id
 
 (** Resolve an instance by id and run a selection. *)
 let run_on_instance_id (state : App_state.t) ~(instance_id : string) ~(media_id : int)

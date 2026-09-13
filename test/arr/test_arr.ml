@@ -415,6 +415,78 @@ let test_seerr_webhook () =
   Alcotest.(check bool) "missing type is an error" true
     (Result.is_error (parse_seerr_webhook (`Assoc [ ("subject", `String "x") ])))
 
+(* ------------------------------------------------------------------ *)
+(* Grab response handling (regression: docs/GRAB_BUG_NOTES.md)          *)
+(* ------------------------------------------------------------------ *)
+
+(* A throwaway HTTP server that answers one request with a fixed status and
+   body, so the real Cohttp client path is exercised.  Returns the port. *)
+let serve_once ~(status : int) ~(body : string) : int * unit Lwt.t =
+  let socket = Lwt_unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
+  Lwt_unix.setsockopt socket Unix.SO_REUSEADDR true;
+  Lwt_unix.bind socket (Unix.ADDR_INET (Unix.inet_addr_loopback, 0)) |> Lwt_main.run;
+  Lwt_unix.listen socket 1;
+  let port =
+    match Lwt_unix.getsockname socket with
+    | Unix.ADDR_INET (_, p) -> p
+    | Unix.ADDR_UNIX _ -> Alcotest.fail "expected an inet socket"
+  in
+  let served =
+    let open Lwt.Infix in
+    Lwt_unix.accept socket >>= fun (client, _) ->
+    let buf = Bytes.create 65536 in
+    Lwt_unix.read client buf 0 (Bytes.length buf) >>= fun _ ->
+    let response =
+      Printf.sprintf
+        "HTTP/1.1 %d X\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: \
+         close\r\n\r\n%s"
+        status (String.length body) body
+    in
+    let bytes = Bytes.of_string response in
+    Lwt_unix.write client bytes 0 (Bytes.length bytes) >>= fun _ ->
+    Lwt_unix.close client >>= fun () -> Lwt_unix.close socket
+  in
+  (port, served)
+
+let post_unit_to ~status ~body =
+  let port, served = serve_once ~status ~body in
+  Lwt_main.run
+    (Lwt.both served
+       (A.Http.post_unit
+          ~base_url:(Printf.sprintf "http://127.0.0.1:%d" port)
+          ~api_key:"k" "/api/v3/release"
+          (`Assoc [ ("guid", `String "g"); ("indexerId", `Int 4) ])))
+  |> snd
+
+(* POST /api/v3/release echoes the posted resource, but Pickarr must treat the
+   status code as the outcome: an empty, null-filled, plain-text or
+   proxy-rewritten 2xx body is still a completed grab. *)
+let test_grab_response_handling () =
+  let ok label r =
+    Alcotest.(check bool) (label ^ " counts as a successful grab") true (Result.is_ok r)
+  in
+  ok "echoed resource" (post_unit_to ~status:201 ~body:{|{"guid":"g","indexerId":4}|});
+  ok "mostly-null resource"
+    (post_unit_to ~status:200 ~body:{|{"guid":null,"indexerId":0,"title":null}|});
+  ok "empty body" (post_unit_to ~status:200 ~body:"");
+  ok "plain text body" (post_unit_to ~status:200 ~body:"Release grabbed");
+  ok "202 accepted" (post_unit_to ~status:202 ~body:"");
+  (* Failures must keep the *arr message so the UI can show it. *)
+  (match
+     post_unit_to ~status:404
+       ~body:{|{"message":"Couldn't find requested release in cache, try searching again"}|}
+   with
+  | Error (A.Http.Http_status (404, m)) ->
+      Alcotest.(check string) "404 message"
+        "Couldn't find requested release in cache, try searching again" m
+  | Error e -> Alcotest.failf "expected Http_status 404, got %s" (A.Http.error_to_string e)
+  | Ok () -> Alcotest.fail "404 must not count as a grab");
+  match post_unit_to ~status:409 ~body:{|{"message":"Unable to add release"}|} with
+  | Error (A.Http.Http_status (409, m)) ->
+      Alcotest.(check string) "409 message" "Unable to add release" m
+  | Error e -> Alcotest.failf "expected Http_status 409, got %s" (A.Http.error_to_string e)
+  | Ok () -> Alcotest.fail "409 must not count as a grab"
+
 let tests =
   [
     ("sonarr release mapping", `Quick, test_sonarr_release_mapping);
@@ -430,6 +502,7 @@ let tests =
     ("seerr webhook", `Quick, test_seerr_webhook);
     ("http join", `Quick, test_http_join);
     ("http error bodies", `Quick, test_http_error_bodies);
+    ("grab response handling", `Quick, test_grab_response_handling);
     ("lenient decoding", `Quick, test_lenient_decoding);
   ]
 

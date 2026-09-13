@@ -138,6 +138,11 @@ button.small {
   font-size: 0.8rem;
 }
 
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 input,
 select,
 textarea {

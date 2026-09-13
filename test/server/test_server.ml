@@ -308,6 +308,31 @@ let test_options_ignores_unknown_fields () =
     (Ok { grab = true; instruction = None; use_ai = None })
     (parse {|{"media_id":123,"grab":true,"whatever":null}|})
 
+(* Body parsing for POST /api/grab/:instance_id/:media_id, the per-candidate
+   grab button (regression: docs/GRAB_BUG_NOTES.md). *)
+let test_release_id_parsing () =
+  let parse s = Selection.release_id_of_json (Yojson.Safe.from_string s) in
+  Alcotest.(check (result string string))
+    "guid style id"
+    (Ok "https://indexer.example/api/t/abc123")
+    (parse {|{"release_id":"https://indexer.example/api/t/abc123"}|});
+  Alcotest.(check (result string string))
+    "trimmed" (Ok "abc")
+    (parse {|{"release_id":"  abc  "}|});
+  Alcotest.(check (result string string))
+    "extra fields tolerated" (Ok "abc")
+    (parse {|{"release_id":"abc","grab":true}|});
+  List.iter
+    (fun body ->
+      match parse body with
+      | Error _ -> ()
+      | Ok _ -> Alcotest.failf "expected %s to be rejected" body)
+    [ "{}"; {|{"release_id":""}|}; {|{"release_id":"   "}|}; {|{"release_id":7}|};
+      {|{"release_id":null}|}; "[1,2]"; {|"abc"|} ];
+  match Selection.release_id_of_json `Null with
+  | Error _ -> ()
+  | Ok _ -> Alcotest.fail "an empty body must be rejected"
+
 (* ------------------------------------------------------------------ *)
 (* Automatic mode                                                      *)
 (* ------------------------------------------------------------------ *)
@@ -696,6 +721,7 @@ let () =
           Alcotest.test_case "grab query" `Quick test_options_query_grab;
           Alcotest.test_case "rejects bad types" `Quick test_options_rejects_bad_types;
           Alcotest.test_case "ignores unknown fields" `Quick test_options_ignores_unknown_fields;
+          Alcotest.test_case "release id parsing" `Quick test_release_id_parsing;
         ] );
       ( "automatic",
         [

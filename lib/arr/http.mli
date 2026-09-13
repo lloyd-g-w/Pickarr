@@ -33,6 +33,14 @@ val post :
   (Yojson.Safe.t, error) result Lwt.t
 (** POST a JSON body.  An empty response body decodes as [`Null]. *)
 
+val post_unit :
+  base_url:string -> api_key:string -> string -> Yojson.Safe.t -> (unit, error) result Lwt.t
+(** POST a JSON body to an action endpoint where the status code alone is the
+    outcome (for example [POST /api/v3/release]).  Any 2xx is a success and
+    the response body is never parsed, so an empty, plain-text or
+    proxy-rewritten body cannot turn a completed action into a reported
+    failure. *)
+
 val put :
   base_url:string ->
   api_key:string ->

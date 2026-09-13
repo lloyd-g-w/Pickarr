@@ -442,18 +442,34 @@ function renderInstanceOptions() {
   if (previous) select.value = previous;
 }
 
+/* Errors from api() carry the HTTP status; show it, because "not found" means
+   something very different for a media id than for an unreachable instance. */
+function describeApiError(e) {
+  return e.status ? `HTTP ${e.status} · ${e.message}` : e.message;
+}
+
+/* The current Select-page target, so the per-candidate Grab buttons know what
+   to re-search. */
+let selectTarget = null;
+
 async function runSelection(grab) {
   const instanceId = $("#select-instance").value;
   const mediaId = parseInt($("#select-media-id").value, 10);
-  if (!instanceId) return toast("Configure an instance first", true);
-  if (!mediaId || mediaId < 1) return toast("Enter a media id", true);
+  if (!instanceId)
+    return toast("No enabled instance: add one on the Instances tab first", true);
+  if (!Number.isInteger(mediaId) || mediaId < 1)
+    return toast("Enter a media id (Radarr movie id, Sonarr episode id)", true);
   const body = {
     grab: grab,
     use_ai: $("#select-use-ai").checked,
   };
   const instruction = $("#select-instruction").value.trim();
   if (instruction) body.instruction = instruction;
-  setResult("#select-status", grab ? "selecting and grabbing…" : "selecting…", true);
+  setResult(
+    "#select-status",
+    grab ? "searching indexers and grabbing…" : "searching indexers…",
+    true
+  );
   $("#select-result").replaceChildren();
   try {
     const result = await api(`/api/select/${encodeURIComponent(instanceId)}/${mediaId}`, {
@@ -461,17 +477,55 @@ async function runSelection(grab) {
       body: JSON.stringify(body),
     });
     state.lastResult = result;
+    selectTarget = { instanceId, mediaId };
     setResult("#select-status", `done in ${result.duration_ms} ms`, true);
     renderSelectionResult(result);
     if (grab) loadHistory();
   } catch (e) {
-    setResult("#select-status", e.message, false);
-    toast(e.message, true);
+    setResult("#select-status", describeApiError(e), false);
+    toast(describeApiError(e), true);
+  }
+}
+
+/* Grab a candidate the pipeline did not pick.  The server re-runs the search
+   first, because Sonarr/Radarr only accept releases from the last search. */
+async function grabCandidate(release, button) {
+  if (!selectTarget) return toast("Run a selection first", true);
+  if (!confirm(`Tell the instance to grab:\n\n${release.title}`)) return;
+  const { instanceId, mediaId } = selectTarget;
+  const previous = button.textContent;
+  button.disabled = true;
+  button.textContent = "grabbing…";
+  setResult("#select-status", "re-searching, then grabbing…", true);
+  try {
+    const result = await api(`/api/grab/${encodeURIComponent(instanceId)}/${mediaId}`, {
+      method: "POST",
+      body: JSON.stringify({ release_id: release.id }),
+    });
+    state.lastResult = result;
+    setResult(
+      "#select-status",
+      result.grabbed ? "grabbed" : `not grabbed: ${result.grab_error || "unknown reason"}`,
+      result.grabbed
+    );
+    renderSelectionResult(result);
+    loadHistory();
+  } catch (e) {
+    button.disabled = false;
+    button.textContent = previous;
+    setResult("#select-status", describeApiError(e), false);
+    toast(describeApiError(e), true);
   }
 }
 
 function releaseRow(scored, isWinner) {
   const r = scored.release;
+  const button = el(
+    "button",
+    { class: "small", title: "Grab this release instead of the selected one" },
+    isWinner ? "Grab again" : "Grab"
+  );
+  button.addEventListener("click", () => grabCandidate(r, button));
   return el(
     "tr",
     { class: isWinner ? "winner" : "" },
@@ -484,7 +538,8 @@ function releaseRow(scored, isWinner) {
     el("td", {}, num(r.release_group, "—")),
     el("td", {}, num(r.seeders, "—")),
     el("td", {}, num(r.custom_format_score, "—")),
-    el("td", {}, num(r.indexer, "—"))
+    el("td", {}, num(r.indexer, "—")),
+    el("td", {}, button)
   );
 }
 
@@ -580,9 +635,19 @@ function renderSelectionResult(result) {
         el(
           "tr",
           {},
-          ["Score", "Title", "Size", "Quality", "Source", "Codec", "Group", "Seeders", "CF", "Indexer"].map((h) =>
-            el("th", {}, h)
-          )
+          [
+            "Score",
+            "Title",
+            "Size",
+            "Quality",
+            "Source",
+            "Codec",
+            "Group",
+            "Seeders",
+            "CF",
+            "Indexer",
+            "",
+          ].map((h) => el("th", {}, h))
         )
       ),
       el("tbody", {}, ...result.candidates.map((c) => releaseRow(c, c.release.id === selectedId)))

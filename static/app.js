@@ -1359,3 +1359,312 @@ async function main() {
 }
 
 main();
+
+/* ------------------------------------------------------------------ */
+/* Seerr / Overseerr / Jellyseerr requests                            */
+/* ------------------------------------------------------------------ */
+
+const seerrSchema = [
+  { key: "enabled", label: "Seerr integration enabled", type: "bool" },
+  { key: "url", label: "Seerr URL", type: "text", placeholder: "http://seerr:5055" },
+  {
+    key: "api_key",
+    label: "Seerr API key",
+    type: "text",
+    password: true,
+    hint: "admin key (Settings → General); leave ******** to keep",
+  },
+  { key: "poll_interval_seconds", label: "Poll interval (seconds)", type: "int", hint: "minimum 30" },
+  { key: "auto_approve", label: "Approve pending requests", type: "bool", hint: "off = you approve in Seerr" },
+  { key: "process_approved", label: "Fulfil approved requests", type: "bool" },
+  { key: "grab", label: "Actually grab", type: "bool", hint: "off = dry run" },
+  { key: "max_requests_per_run", label: "Max requests per run", type: "int" },
+];
+
+function seerrRequestLabel(r) {
+  const title = r.title || `${r.type || "request"} #${r.id}`;
+  const year = r.year ? ` (${r.year})` : "";
+  const seasons = (r.seasons || []).length ? ` — season ${r.seasons.join(", ")}` : "";
+  return `${title}${year}${seasons}${r.is4k ? " [4K]" : ""}`;
+}
+
+function renderSeerrDashboard() {
+  const container = $("#seerr-dashboard");
+  if (!container) return;
+  const s = state.seerr;
+  if (!s) {
+    container.replaceChildren(el("p", { class: "hint" }, "Loading…"));
+    return;
+  }
+  if (!s.enabled) {
+    container.replaceChildren(
+      el("p", { class: "hint" }, "Off. Configure it on the Requests tab to fulfil Seerr requests.")
+    );
+    return;
+  }
+  const rows = [
+    ["Seerr", s.configured ? s.url : s.detail],
+    ["Pending", num(state.seerrCounts && state.seerrCounts.pending, "—")],
+    ["Waiting for a release", num(state.seerrCounts && state.seerrCounts.processing, "—")],
+    ["Approving", s.auto_approve ? "automatic" : "manual"],
+    ["Grabbing", s.grab ? "yes" : "no (dry run)"],
+    ["Last run", num(s.last_run_at)],
+  ];
+  container.replaceChildren(
+    el(
+      "div",
+      { class: "cards" },
+      ...rows.map(([k, v]) => el("div", { class: "card" }, el("div", { class: "k" }, k), el("div", { class: "v" }, v)))
+    )
+  );
+}
+
+function renderSeerrPoller() {
+  const container = $("#seerr-poller");
+  if (!container) return;
+  const s = state.seerr || {};
+  const rows = [
+    ["Enabled", s.enabled ? "yes" : "no"],
+    ["Connection", s.configured ? "configured" : s.detail || "—"],
+    ["Interval", s.interval_seconds ? `${s.interval_seconds}s` : "—"],
+    ["Approving", s.auto_approve ? "automatic" : "manual"],
+    ["Fulfilling", s.process_approved ? "yes" : "no"],
+    ["Grabbing", s.grab ? "yes" : "no (dry run)"],
+    ["Runs", num(s.runs, 0)],
+    ["Last run", num(s.last_run_at)],
+    ["Next run", num(s.next_run_at)],
+    ["Last error", num(s.last_error, "none")],
+  ];
+  container.replaceChildren(
+    el(
+      "div",
+      { class: "cards" },
+      ...rows.map(([k, v]) => el("div", { class: "card" }, el("div", { class: "k" }, k), el("div", { class: "v" }, v)))
+    )
+  );
+  renderSeerrResults((s.last_results || []).slice(0, 25));
+}
+
+function renderSeerrResults(results) {
+  const container = $("#seerr-results");
+  if (!container) return;
+  if (!results.length) {
+    container.replaceChildren();
+    return;
+  }
+  container.replaceChildren(
+    el("h4", {}, "Last pass"),
+    el(
+      "table",
+      {},
+      el("thead", {}, el("tr", {}, ["Item", "Outcome", "Grabbed"].map((h) => el("th", {}, h)))),
+      el(
+        "tbody",
+        {},
+        ...results.map((r) =>
+          el(
+            "tr",
+            {},
+            el("td", {}, num(r.request || r.media || r.instance, "—")),
+            el("td", {}, r.error || r.skipped || r.action || r.selected || r.reason || "—"),
+            el("td", {}, r.grabbed === undefined ? "—" : r.grabbed ? "yes" : "no")
+          )
+        )
+      )
+    )
+  );
+}
+
+/* [statusNode] is the per-row <span> the outcome is written into. */
+async function seerrAction(requestId, action, statusNode) {
+  const say = (message, ok) => {
+    if (!statusNode) return;
+    statusNode.textContent = message || "";
+    statusNode.className = "result" + (message ? (ok ? " ok" : " bad") : "");
+  };
+  say(`${action}…`, true);
+  try {
+    const r = await api(`/api/seerr/requests/${requestId}/${action}`, { method: "POST" });
+    say(r.action || "done", true);
+    /* Approving and fulfilling run the selection in the background, so the
+       lists are refreshed a moment later as well. */
+    loadSeerrStatus();
+    setTimeout(() => {
+      loadSeerrRequests();
+      loadSeerrStatus();
+    }, 4000);
+  } catch (e) {
+    say(e.message, false);
+    toast(e.message, true);
+  }
+}
+
+function renderSeerrRequests(containerSelector, payload, kind) {
+  const container = $(containerSelector);
+  if (!container) return;
+  if (payload && payload.error) {
+    container.replaceChildren(el("p", { class: "result bad" }, payload.error));
+    return;
+  }
+  const items = (payload && payload.results) || [];
+  if (!items.length) {
+    container.replaceChildren(el("p", { class: "hint" }, "Nothing here."));
+    return;
+  }
+  container.replaceChildren(
+    el(
+      "table",
+      {},
+      el(
+        "thead",
+        {},
+        el("tr", {}, ["Item", "Requested by", "Media", "In the *arr", "Actions"].map((h) => el("th", {}, h)))
+      ),
+      el(
+        "tbody",
+        {},
+        ...items.map((r) => {
+          const status = el("span", { class: "result" });
+          const buttons =
+            kind === "pending"
+              ? [
+                  el(
+                    "button",
+                    { class: "small primary", onclick: () => seerrAction(r.id, "approve", status) },
+                    "Approve"
+                  ),
+                  el(
+                    "button",
+                    {
+                      class: "small danger",
+                      onclick: () => {
+                        if (confirm(`Decline "${seerrRequestLabel(r)}" in Seerr?`))
+                          seerrAction(r.id, "decline", status);
+                      },
+                    },
+                    "Decline"
+                  ),
+                ]
+              : [
+                  el(
+                    "button",
+                    { class: "small", onclick: () => seerrAction(r.id, "fulfil", status) },
+                    "Fulfil now"
+                  ),
+                ];
+          return el(
+            "tr",
+            {},
+            el("td", {}, seerrRequestLabel(r)),
+            el("td", {}, num(r.requested_by, "—")),
+            el("td", {}, num(r.media_status_label, "—")),
+            el("td", {}, r.pushed_to_arr ? "yes" : "not yet"),
+            el("td", {}, ...buttons, status)
+          );
+        })
+      )
+    )
+  );
+}
+
+async function loadSeerrStatus() {
+  try {
+    state.seerr = await api("/api/seerr/status");
+    renderSeerrDashboard();
+    renderSeerrPoller();
+  } catch (e) {
+    const poller = $("#seerr-poller");
+    if (poller) poller.replaceChildren(el("p", { class: "result bad" }, e.message));
+  }
+}
+
+async function loadSeerrRequests() {
+  const fetchFilter = async (filter) => {
+    try {
+      return await api(`/api/seerr/requests?filter=${filter}&take=30`);
+    } catch (e) {
+      return { error: e.message };
+    }
+  };
+  const [pending, processing] = await Promise.all([fetchFilter("pending"), fetchFilter("processing")]);
+  state.seerrCounts = {
+    pending: pending && pending.results ? pending.results.length : undefined,
+    processing: processing && processing.results ? processing.results.length : undefined,
+  };
+  renderSeerrRequests("#seerr-pending", pending, "pending");
+  renderSeerrRequests("#seerr-processing", processing, "processing");
+  renderSeerrDashboard();
+}
+
+function renderSeerrForm() {
+  if (state.config && state.config.seerr) buildForm($("#seerr-form"), seerrSchema, state.config.seerr);
+}
+
+async function loadSeerrTab() {
+  renderSeerrForm();
+  await loadSeerrStatus();
+  if (state.seerr && state.seerr.configured) loadSeerrRequests();
+  else {
+    renderSeerrRequests("#seerr-pending", { results: [] }, "pending");
+    renderSeerrRequests("#seerr-processing", { results: [] }, "processing");
+  }
+}
+
+function wireSeerr() {
+  const tabButton = document.querySelector('#tabs button[data-tab="requests"]');
+  if (tabButton) tabButton.addEventListener("click", loadSeerrTab);
+
+  const save = $("#seerr-save");
+  if (save)
+    save.addEventListener("click", async () => {
+      const ok = await saveConfigPatch({ seerr: readForm($("#seerr-form"), seerrSchema) }, "#seerr-status-result");
+      if (ok) {
+        renderSeerrForm();
+        loadSeerrStatus();
+      }
+    });
+
+  const test = $("#seerr-test");
+  if (test)
+    test.addEventListener("click", async () => {
+      setResult("#seerr-status-result", "testing…", true);
+      try {
+        const r = await api("/api/seerr/test", { method: "POST" });
+        setResult(
+          "#seerr-status-result",
+          `Seerr ${r.version} — ${r.pending} pending, ${r.processing} waiting for a release`,
+          true
+        );
+      } catch (e) {
+        setResult("#seerr-status-result", e.message, false);
+      }
+    });
+
+  const run = $("#seerr-run");
+  if (run)
+    run.addEventListener("click", async () => {
+      setResult("#seerr-run-result", "running…", true);
+      try {
+        const summary = await api("/api/seerr/run", { method: "POST" });
+        setResult(
+          "#seerr-run-result",
+          `${summary.approved} approved, ${summary.fulfilled} fulfilled in ${summary.duration_ms} ms${
+            summary.dry_run ? " (dry run)" : ""
+          }`,
+          true
+        );
+        renderSeerrResults(summary.results || []);
+        loadSeerrStatus();
+        loadSeerrRequests();
+      } catch (e) {
+        setResult("#seerr-run-result", e.message, false);
+      }
+    });
+
+  const reload = $("#seerr-reload");
+  if (reload) reload.addEventListener("click", loadSeerrRequests);
+
+  loadSeerrStatus();
+}
+
+wireSeerr();

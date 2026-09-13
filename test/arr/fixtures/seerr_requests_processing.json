@@ -1,0 +1,68 @@
+{
+  "pageInfo": { "pages": 2, "pageSize": 2, "results": 3, "page": 1 },
+  "results": [
+    {
+      "id": 41,
+      "status": 2,
+      "createdAt": "2026-02-01T09:12:00.000Z",
+      "updatedAt": "2026-02-01T09:12:30.000Z",
+      "type": "movie",
+      "is4k": false,
+      "serverId": 0,
+      "profileId": 4,
+      "rootFolder": "/movies",
+      "seasons": [],
+      "media": {
+        "id": 77,
+        "mediaType": "movie",
+        "tmdbId": 603,
+        "tvdbId": null,
+        "imdbId": "tt0133093",
+        "status": 3,
+        "status4k": 1,
+        "externalServiceId": 912,
+        "externalServiceId4k": null,
+        "serviceId": 0,
+        "createdAt": "2026-02-01T09:12:00.000Z",
+        "updatedAt": "2026-02-01T09:12:30.000Z"
+      },
+      "requestedBy": {
+        "id": 3,
+        "email": "alice@example.com",
+        "displayName": "alice",
+        "permissions": 32,
+        "createdAt": "2025-11-02T10:00:00.000Z",
+        "updatedAt": "2026-01-30T10:00:00.000Z"
+      },
+      "modifiedBy": null
+    },
+    {
+      "id": 42,
+      "status": 2,
+      "createdAt": "2026-02-01T10:00:00.000Z",
+      "updatedAt": "2026-02-01T10:00:05.000Z",
+      "type": "tv",
+      "is4k": true,
+      "seasons": [
+        { "id": 501, "seasonNumber": 0, "status": 2 },
+        { "id": 502, "seasonNumber": 2, "status": 2 },
+        { "id": 503, "seasonNumber": 3, "status": 2 }
+      ],
+      "media": {
+        "id": 78,
+        "mediaType": "tv",
+        "tmdbId": 1396,
+        "tvdbId": 81189,
+        "imdbId": "tt0903747",
+        "status": 5,
+        "status4k": 3,
+        "externalServiceId": 12,
+        "externalServiceId4k": 44,
+        "serviceId": 1,
+        "createdAt": "2026-02-01T10:00:00.000Z",
+        "updatedAt": "2026-02-01T10:00:05.000Z"
+      },
+      "requestedBy": { "id": 4, "email": "bob@example.com", "plexUsername": "bob" }
+    }
+  ]
+}

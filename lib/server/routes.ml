@@ -330,6 +330,16 @@ let security_auth_required (state : App_state.t) request =
 
 (* ------------------------------------------------------------------ *)
 
+(* Responses that embed a media object get their "open in Sonarr/Radarr" and
+   "open in Seerr" URLs added here, at the boundary, so the link shapes live
+   in one place (Library) and out of the core types.  [instance_id] is the
+   instance the route used; without one, Library falls back to the media's
+   app default, which is what the /select/sonarr/... routes select on. *)
+let respond_linked (state : App_state.t) ?instance_id ?status (json : Yojson.Safe.t) =
+  let config = App_state.config state in
+  let instance = Option.bind instance_id (App_state.find_instance state) in
+  respond_json ?status (Library.decorate ~config ~instance json)
+
 let selection_error_response (e : Selection.error) =
   match e with
   | Selection.Bad_request m -> error_json `Bad_Request m
@@ -348,7 +358,7 @@ let parse_options request =
       Lwt.return
         (Selection.options_of_json ?grab_query:(Dream.query request "grab") body)
 
-let run_selection request
+let run_selection (state : App_state.t) ?instance_id request
     (resolve : Selection.options -> (Types.selection_result, Selection.error) result Lwt.t)
     =
   let* opts = parse_options request in
@@ -358,7 +368,8 @@ let run_selection request
       let* result = resolve opts in
       match result with
       | Error e -> selection_error_response e
-      | Ok result -> respond_json (Types.selection_result_to_yojson result))
+      | Ok result ->
+          respond_linked state ?instance_id (Types.selection_result_to_yojson result))
 
 let media_id_param request name =
   match int_of_string_opt (Dream.param request name) with
@@ -389,7 +400,9 @@ let grab_specific_release (state : App_state.t) request =
               in
               match result with
               | Error e -> selection_error_response e
-              | Ok result -> respond_json (Types.selection_result_to_yojson result))))
+              | Ok result ->
+                  respond_linked state ~instance_id
+                    (Types.selection_result_to_yojson result))))
 
 (* ------------------------------------------------------------------ *)
 (* Seasons and whole series (Sonarr)                                   *)
@@ -407,7 +420,7 @@ let season_number_param request name =
 
 (* Like [run_selection], but for a whole-series run, which answers with one
    outcome per season instead of a single selection. *)
-let run_series_selection request
+let run_series_selection (state : App_state.t) ?instance_id request
     (resolve :
       Selection.options -> seasons:int list -> (Selection.series_result, Selection.error) result Lwt.t)
     =
@@ -424,13 +437,14 @@ let run_series_selection request
           let* result = resolve opts ~seasons in
           match result with
           | Error e -> selection_error_response e
-          | Ok result -> respond_json (Selection.series_result_to_yojson result)))
+          | Ok result ->
+              respond_linked state ?instance_id (Selection.series_result_to_yojson result)))
 
 let select_season_on_default (state : App_state.t) request =
   match (media_id_param request "series_id", season_number_param request "season_number") with
   | Error e, _ | _, Error e -> error_json `Bad_Request e
   | Ok series_id, Ok season_number ->
-      run_selection request (fun opts ->
+      run_selection state request (fun opts ->
           Selection.run_season_on_default state ~series_id ~season_number opts)
 
 let select_season_on_instance (state : App_state.t) request =
@@ -438,14 +452,14 @@ let select_season_on_instance (state : App_state.t) request =
   | Error e, _ | _, Error e -> error_json `Bad_Request e
   | Ok series_id, Ok season_number ->
       let instance_id = Dream.param request "instance_id" in
-      run_selection request (fun opts ->
+      run_selection state ~instance_id request (fun opts ->
           Selection.run_season_on_instance_id state ~instance_id ~series_id ~season_number opts)
 
 let select_series_on_default (state : App_state.t) request =
   match media_id_param request "series_id" with
   | Error e -> error_json `Bad_Request e
   | Ok series_id ->
-      run_series_selection request (fun opts ~seasons ->
+      run_series_selection state request (fun opts ~seasons ->
           Selection.run_series_on_default state ~series_id ~seasons opts)
 
 let select_series_on_instance (state : App_state.t) request =
@@ -453,7 +467,7 @@ let select_series_on_instance (state : App_state.t) request =
   | Error e -> error_json `Bad_Request e
   | Ok series_id ->
       let instance_id = Dream.param request "instance_id" in
-      run_series_selection request (fun opts ~seasons ->
+      run_series_selection state ~instance_id request (fun opts ~seasons ->
           Selection.run_series_on_instance_id state ~instance_id ~series_id ~seasons opts)
 
 (* The season equivalent of [grab_specific_release]: a pack is named by series
@@ -477,7 +491,8 @@ let grab_specific_season_release (state : App_state.t) request =
           in
           match result with
           | Error e -> selection_error_response e
-          | Ok result -> respond_json (Types.selection_result_to_yojson result)))
+          | Ok result ->
+              respond_linked state ~instance_id (Types.selection_result_to_yojson result)))
 
 let get_series_overview (state : App_state.t) request =
   match media_id_param request "series_id" with
@@ -487,7 +502,57 @@ let get_series_overview (state : App_state.t) request =
       let* overview = Selection.series_overview state ~instance_id ~series_id in
       match overview with
       | Error e -> selection_error_response e
-      | Ok json -> respond_json json)
+      | Ok json -> respond_linked state ~instance_id json)
+
+(* ------------------------------------------------------------------ *)
+(* Library browsing                                                    *)
+(* ------------------------------------------------------------------ *)
+
+(* One text box drives the Search page: a title, or an id pasted from
+   Sonarr/Radarr, TMDB, TheTVDB or IMDb.  The instance's library is listed
+   once and cached, so the matching itself is local. *)
+let library_search (state : App_state.t) request =
+  let instance_id = Dream.param request "instance_id" in
+  let query = Option.value (Dream.query request "q") ~default:"" in
+  let* results = Selection.library_search state ~instance_id ~query in
+  match results with
+  | Error e -> selection_error_response e
+  | Ok json -> respond_linked state ~instance_id json
+
+(* The seasons of a picked series: the same overview the season buttons use. *)
+let library_series (state : App_state.t) request =
+  match media_id_param request "series_id" with
+  | Error e -> error_json `Bad_Request e
+  | Ok series_id -> (
+      let instance_id = Dream.param request "instance_id" in
+      let* overview = Selection.series_overview state ~instance_id ~series_id in
+      match overview with
+      | Error e -> selection_error_response e
+      | Ok json -> respond_linked state ~instance_id json)
+
+(* Loaded on demand when a season row is expanded, so picking a series does
+   not fetch every episode of every season up front. *)
+let library_season_episodes (state : App_state.t) request =
+  match (media_id_param request "series_id", season_number_param request "season_number") with
+  | Error e, _ | _, Error e -> error_json `Bad_Request e
+  | Ok series_id, Ok season_number -> (
+      let instance_id = Dream.param request "instance_id" in
+      let* episodes =
+        Selection.library_season_episodes state ~instance_id ~series_id ~season_number
+      in
+      match episodes with
+      | Error e -> selection_error_response e
+      | Ok json -> respond_linked state ~instance_id json)
+
+let library_movie (state : App_state.t) request =
+  match media_id_param request "movie_id" with
+  | Error e -> error_json `Bad_Request e
+  | Ok movie_id -> (
+      let instance_id = Dream.param request "instance_id" in
+      let* movie = Selection.library_movie state ~instance_id ~movie_id in
+      match movie with
+      | Error e -> selection_error_response e
+      | Ok json -> respond_linked state ~instance_id json)
 
 (* ------------------------------------------------------------------ *)
 (* Handlers                                                            *)
@@ -880,7 +945,9 @@ let seerr_select (state : App_state.t) request =
           | Ok body -> (
               let* result = Seerr_sync.select_for_request state ~request_id body in
               match result with
-              | Ok json -> respond_json json
+              | Ok json ->
+                  let instance_id = string_field "instance_id" json in
+                  respond_linked state ?instance_id json
               | Error e -> seerr_request_error_response e)))
 
 (* ------------------------------------------------------------------ *)
@@ -952,14 +1019,14 @@ let router (state : App_state.t) =
                  match media_id_param request "id" with
                  | Error e -> error_json `Bad_Request e
                  | Ok media_id ->
-                     run_selection request (fun opts ->
+                     run_selection state request (fun opts ->
                          Selection.run_on_default state ~app:Types.Radarr ~media_id opts)));
           Dream.post "/select/sonarr/episode/:id"
             (guard "POST /api/select/sonarr/episode/:id" (fun request ->
                  match media_id_param request "id" with
                  | Error e -> error_json `Bad_Request e
                  | Ok media_id ->
-                     run_selection request (fun opts ->
+                     run_selection state request (fun opts ->
                          Selection.run_on_default state ~app:Types.Sonarr ~media_id opts)));
           (* Seasons and whole series: registered before the generic
              /select/:instance_id/:media_id route so that the literal
@@ -979,13 +1046,26 @@ let router (state : App_state.t) =
           Dream.get "/series/:instance_id/:series_id"
             (guard "GET /api/series/:instance_id/:series_id"
                (get_series_overview state));
+          (* Library browsing for the Search page.  The literal segments
+             "series" and "movie" come before nothing else here, so the order
+             within this group does not matter. *)
+          Dream.get "/library/:instance_id/search"
+            (guard "GET /api/library/:instance_id/search" (library_search state));
+          Dream.get "/library/:instance_id/series/:series_id/season/:season_number"
+            (guard "GET /api/library/:instance_id/series/:series_id/season/:season_number"
+               (library_season_episodes state));
+          Dream.get "/library/:instance_id/series/:series_id"
+            (guard "GET /api/library/:instance_id/series/:series_id"
+               (library_series state));
+          Dream.get "/library/:instance_id/movie/:movie_id"
+            (guard "GET /api/library/:instance_id/movie/:movie_id" (library_movie state));
           Dream.post "/select/:instance_id/:media_id"
             (guard "POST /api/select/:instance_id/:media_id" (fun request ->
                  match media_id_param request "media_id" with
                  | Error e -> error_json `Bad_Request e
                  | Ok media_id ->
                      let instance_id = Dream.param request "instance_id" in
-                     run_selection request (fun opts ->
+                     run_selection state ~instance_id request (fun opts ->
                          Selection.run_on_instance_id state ~instance_id ~media_id opts)));
           (* The season form is registered first: it has more segments, and
              the literal "season" must not be read as a media id. *)

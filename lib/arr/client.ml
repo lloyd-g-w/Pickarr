@@ -3,11 +3,39 @@
 module C = Pickarr_core.Config
 module T = Pickarr_core.Types
 
-type t = { inst : C.instance }
+(** One row of the library browser: a Sonarr series or a Radarr movie,
+    reduced to what the UI shows and what the link builders need. *)
+type library_item = {
+  li_id : int;
+  li_kind : string;  (** ["series"] or ["movie"]. *)
+  li_title : string;
+  li_sort_title : string option;
+  li_alternate_titles : string list;
+  li_year : int option;
+  li_monitored : bool;
+  li_has_file : bool option;  (** Movies only. *)
+  li_season_count : int option;  (** Series only. *)
+  li_episode_count : int option;  (** Series only: aired, monitored episodes. *)
+  li_missing_count : int option;  (** Series only: aired episodes without a file. *)
+  li_tmdb_id : int option;
+  li_tvdb_id : int option;
+  li_imdb_id : string option;
+  li_title_slug : string option;
+}
+
+type t = {
+  inst : C.instance;
+  mutable library : (float * library_item list) option;
+      (** The whole series/movie list with the unix time it was fetched.  The
+          library browser searches locally, so one listing serves many
+          keystrokes; App_state drops the client (and this cache) whenever the
+          instance URL or API key changes. *)
+}
+
 type error = Http.error
 
 let error_to_string = Http.error_to_string
-let create inst = { inst }
+let create inst = { inst; library = None }
 let instance t = t.inst
 let app t = t.inst.C.inst_app
 
@@ -495,3 +523,179 @@ let parse_seerr_webhook (j : Yojson.Safe.t) : (seerr_event, string) result =
           seerr_seasons = seasons;
           seerr_subject = str "subject" j;
         }
+
+(* ------------------------------------------------------------------ *)
+(* Library browsing                                                    *)
+(* ------------------------------------------------------------------ *)
+
+let library_item_of_series (s : Sonarr.series_resource) : library_item =
+  (* Sonarr reports per-season counts in [seasons[].statistics]; the missing
+     count is the aired, monitored episodes that have no file.  Summing the
+     seasons matches what the Sonarr UI shows and needs no episode call. *)
+  let aired, on_disk =
+    List.fold_left
+      (fun (a, d) (ss : Sonarr.season_statistics) ->
+        if ss.Sonarr.ss_season_number = 0 then (a, d)
+        else (a + ss.Sonarr.ss_episode_count, d + ss.Sonarr.ss_episode_file_count))
+      (0, 0) s.Sonarr.sr_seasons
+  in
+  let episode_count =
+    match (s.Sonarr.sr_seasons, s.Sonarr.sr_episode_count) with
+    | [], c -> c
+    | _ -> Some aired
+  in
+  let on_disk_count =
+    match (s.Sonarr.sr_seasons, s.Sonarr.sr_episode_file_count) with
+    | [], c -> c
+    | _ -> Some on_disk
+  in
+  {
+    li_id = s.Sonarr.sr_id;
+    li_kind = "series";
+    li_title = s.Sonarr.sr_title;
+    li_sort_title = s.Sonarr.sr_sort_title;
+    li_alternate_titles = s.Sonarr.sr_alternate_titles;
+    li_year = s.Sonarr.sr_year;
+    li_monitored = s.Sonarr.sr_monitored;
+    li_has_file = None;
+    li_season_count =
+      (match s.Sonarr.sr_season_count with
+      | Some c -> Some c
+      | None ->
+          Some
+            (List.length
+               (List.filter
+                  (fun (ss : Sonarr.season_statistics) -> ss.Sonarr.ss_season_number <> 0)
+                  s.Sonarr.sr_seasons)));
+    li_episode_count = episode_count;
+    li_missing_count =
+      (match (episode_count, on_disk_count) with
+      | Some e, Some d -> Some (max 0 (e - d))
+      | _ -> None);
+    li_tmdb_id = s.Sonarr.sr_tmdb_id;
+    li_tvdb_id = s.Sonarr.sr_tvdb_id;
+    li_imdb_id = s.Sonarr.sr_imdb_id;
+    li_title_slug = s.Sonarr.sr_title_slug;
+  }
+
+let library_item_of_movie (m : Radarr.movie_resource) : library_item =
+  {
+    li_id = m.Radarr.mr_id;
+    li_kind = "movie";
+    li_title = m.Radarr.mr_title;
+    li_sort_title = m.Radarr.mr_sort_title;
+    li_alternate_titles =
+      (match m.Radarr.mr_original_title with
+      | Some t -> t :: m.Radarr.mr_alternate_titles
+      | None -> m.Radarr.mr_alternate_titles);
+    li_year = m.Radarr.mr_year;
+    li_monitored = m.Radarr.mr_monitored;
+    li_has_file = Some m.Radarr.mr_has_file;
+    li_season_count = None;
+    li_episode_count = None;
+    li_missing_count = None;
+    li_tmdb_id = m.Radarr.mr_tmdb_id;
+    li_tvdb_id = None;
+    li_imdb_id = m.Radarr.mr_imdb_id;
+    li_title_slug = m.Radarr.mr_title_slug;
+  }
+
+let library_item_to_yojson (i : library_item) : Yojson.Safe.t =
+  let opt_int = function None -> `Null | Some i -> `Int i in
+  let opt_str = function None -> `Null | Some s -> `String s in
+  `Assoc
+    [
+      ("id", `Int i.li_id);
+      ("kind", `String i.li_kind);
+      ("title", `String i.li_title);
+      ("year", opt_int i.li_year);
+      ("monitored", `Bool i.li_monitored);
+      ("has_file", match i.li_has_file with None -> `Null | Some b -> `Bool b);
+      ("season_count", opt_int i.li_season_count);
+      ("episode_count", opt_int i.li_episode_count);
+      ("missing_count", opt_int i.li_missing_count);
+      ("tmdb_id", opt_int i.li_tmdb_id);
+      ("tvdb_id", opt_int i.li_tvdb_id);
+      ("imdb_id", opt_str i.li_imdb_id);
+      ("title_slug", opt_str i.li_title_slug);
+    ]
+
+let library_max_age = 60.
+
+let library ?(max_age = library_max_age) ?(now = Unix.gettimeofday) t =
+  let fresh =
+    match t.library with
+    | Some (at, items) when now () -. at <= max_age -> Some items
+    | _ -> None
+  in
+  match fresh with
+  | Some items -> ok items
+  | None -> (
+      let base_url = base t and api_key = key t in
+      let* items =
+        match app t with
+        | T.Sonarr ->
+            Lwt.map
+              (Result.map (List.map library_item_of_series))
+              (Sonarr.all_series ~base_url ~api_key ())
+        | T.Radarr ->
+            Lwt.map
+              (Result.map (List.map library_item_of_movie))
+              (Radarr.all_movies ~base_url ~api_key ())
+      in
+      match items with
+      | Error e -> Lwt.return (Error e)
+      | Ok items ->
+          t.library <- Some (now (), items);
+          ok items)
+
+let forget_library t = t.library <- None
+
+(** One episode row of a season, for the library browser. *)
+type episode_summary = {
+  ep_id : int;
+  ep_season_number : int;
+  ep_episode_number : int;
+  ep_title : string option;
+  ep_air_date : string option;
+  ep_has_file : bool;
+  ep_monitored : bool;
+  ep_existing_quality : string option;
+}
+
+let episode_summary_of_resource (e : Sonarr.episode_resource) : episode_summary =
+  {
+    ep_id = e.Sonarr.er_id;
+    ep_season_number = e.Sonarr.er_season_number;
+    ep_episode_number = e.Sonarr.er_episode_number;
+    ep_title = e.Sonarr.er_title;
+    ep_air_date = e.Sonarr.er_air_date_utc;
+    ep_has_file = e.Sonarr.er_has_file;
+    ep_monitored = e.Sonarr.er_monitored;
+    ep_existing_quality = e.Sonarr.er_episode_file_quality;
+  }
+
+let episode_summary_to_yojson (e : episode_summary) : Yojson.Safe.t =
+  let opt_str = function None -> `Null | Some s -> `String s in
+  `Assoc
+    [
+      ("id", `Int e.ep_id);
+      ("season_number", `Int e.ep_season_number);
+      ("episode_number", `Int e.ep_episode_number);
+      ("title", opt_str e.ep_title);
+      ("air_date", opt_str e.ep_air_date);
+      ("has_file", `Bool e.ep_has_file);
+      ("monitored", `Bool e.ep_monitored);
+      ("existing_quality", opt_str e.ep_existing_quality);
+    ]
+
+let season_episodes t ~series_id ~season_number =
+  match app t with
+  | T.Radarr -> Lwt.return (Error (sonarr_only ~what:"Season episodes" t))
+  | T.Sonarr ->
+      let base_url = base t and api_key = key t in
+      Lwt.map
+        (Result.map (fun episodes ->
+             List.map episode_summary_of_resource episodes
+             |> List.sort (fun a b -> compare a.ep_episode_number b.ep_episode_number)))
+        (Sonarr.episodes_of_series ~base_url ~api_key ~season:season_number series_id)

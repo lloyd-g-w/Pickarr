@@ -176,7 +176,9 @@ let run_media ?(grab_allowed = fun (_ : Types.selection_result) -> true)
       in
       let* () =
         Store.append_history state.store
-          (Store.history_entry_of_result ~instance_id:inst.inst_id result)
+          (Store.history_entry_of_result ~instance_id:inst.inst_id
+             ~links:(Library.links_of_media ~config:cfg ~instance:(Some inst) result.media)
+             result)
       in
       Lwt.return (Ok result)
 
@@ -280,7 +282,9 @@ let grab_release_media (state : App_state.t) (inst : Config.instance)
           in
           let* () =
             Store.append_history state.store
-              (Store.history_entry_of_result ~instance_id:inst.inst_id result)
+              (Store.history_entry_of_result ~instance_id:inst.inst_id
+                 ~links:(Library.links_of_media ~config:cfg ~instance:(Some inst) result.media)
+                 result)
           in
           Lwt.return (Ok result))
 
@@ -642,3 +646,96 @@ let seasons_of_json (body : Yojson.Safe.t) : (int list, string) result =
       | Some (`Int n) -> if n < 0 then Error "season numbers must not be negative" else Ok [ n ]
       | Some _ -> Error "\"seasons\" must be a list of season numbers")
   | _ -> Ok []
+
+(* ------------------------------------------------------------------ *)
+(* Library browsing                                                    *)
+(* ------------------------------------------------------------------ *)
+
+(** [library_search state ~instance_id ~query] answers the Search page's one
+    text box: it matches [query] against the instance's cached library (title,
+    sort title, alternate titles, or an id — the *arr id, TMDB, TheTVDB or
+    "tt…" IMDb). *)
+let library_search (state : App_state.t) ~(instance_id : string) ~(query : string) :
+    (Yojson.Safe.t, error) result Lwt.t =
+  match App_state.find_instance state instance_id with
+  | None -> Lwt.return (Error (Instance_not_found instance_id))
+  | Some inst -> (
+      let cfg = App_state.config state in
+      let client = App_state.client state inst in
+      let* items = Client.library client in
+      match items with
+      | Error e ->
+          let msg =
+            Printf.sprintf "%s: could not list the library: %s" inst.inst_name
+              (Client.error_to_string e)
+          in
+          Lwt.return (Error (arr_error_of_http ~msg e))
+      | Ok items ->
+          let hits = Library.search query items in
+          Lwt.return
+            (Ok
+               (`Assoc
+                  [
+                    ("instance_id", `String inst.inst_id);
+                    ("instance_name", `String inst.inst_name);
+                    ("app", `String (Types.app_to_string inst.inst_app));
+                    ("query", `String query);
+                    ("total", `Int (List.length items));
+                    ("truncated", `Bool (List.length hits >= Library.max_results));
+                    ( "results",
+                      `List
+                        (List.map
+                           (Library.item_to_yojson ~instance:inst ~config:cfg)
+                           hits) );
+                  ])))
+
+(** The episodes of one season, so the Search page can offer a single
+    episode. *)
+let library_season_episodes (state : App_state.t) ~(instance_id : string)
+    ~(series_id : int) ~(season_number : int) : (Yojson.Safe.t, error) result Lwt.t =
+  match App_state.find_instance state instance_id with
+  | None -> Lwt.return (Error (Instance_not_found instance_id))
+  | Some inst -> (
+      let client = App_state.client state inst in
+      let* episodes = Client.season_episodes client ~series_id ~season_number in
+      match episodes with
+      | Error e ->
+          let msg =
+            Printf.sprintf "%s: could not load season %d of series %d: %s" inst.inst_name
+              season_number series_id (Client.error_to_string e)
+          in
+          Lwt.return (Error (arr_error_of_http ~msg e))
+      | Ok episodes ->
+          Lwt.return
+            (Ok
+               (`Assoc
+                  [
+                    ("instance_id", `String inst.inst_id);
+                    ("series_id", `Int series_id);
+                    ("season_number", `Int season_number);
+                    ("episodes", `List (List.map Client.episode_summary_to_yojson episodes));
+                  ])))
+
+(** The movie card shown after picking a Radarr result. *)
+let library_movie (state : App_state.t) ~(instance_id : string) ~(movie_id : int) :
+    (Yojson.Safe.t, error) result Lwt.t =
+  match App_state.find_instance state instance_id with
+  | None -> Lwt.return (Error (Instance_not_found instance_id))
+  | Some inst -> (
+      let client = App_state.client state inst in
+      let* media = Client.fetch_media client movie_id in
+      match media with
+      | Error e ->
+          let msg =
+            Printf.sprintf "%s: could not load movie %d: %s" inst.inst_name movie_id
+              (Client.error_to_string e)
+          in
+          Lwt.return (Error (arr_error_of_http ~msg e))
+      | Ok media ->
+          Lwt.return
+            (Ok
+               (`Assoc
+                  [
+                    ("instance_id", `String inst.inst_id);
+                    ("movie", Types.media_to_yojson media);
+                  ])))

@@ -213,9 +213,24 @@ let label ?(title : Seerr.title option) (r : Seerr.request) =
 let opt_str = function None -> `Null | Some s -> `String s
 let opt_int = function None -> `Null | Some i -> `Int i
 
-let request_to_compact ?(title : Seerr.title option) (r : Seerr.request) : Yojson.Safe.t =
+(* Requests are shown before Pickarr has resolved them, so the only link that
+   can be offered on a row is the Seerr one, which needs nothing but the TMDB
+   id the request already carries. *)
+let request_links (cfg : Config.t) (r : Seerr.request) : Yojson.Safe.t =
+  let kind =
+    match r.rq_type with Some "movie" -> Library.Movie | _ -> Library.Series
+  in
+  match Library.seerr_link cfg ~kind ~tmdb_id:r.rq_media.mi_tmdb_id with
+  | None -> `Assoc []
+  | Some url -> `Assoc [ ("seerr", `String url) ]
+
+let request_to_compact ?(config : Config.t option) ?(title : Seerr.title option)
+    (r : Seerr.request) : Yojson.Safe.t =
   `Assoc
-    [
+    ([ ( "links",
+         match config with None -> `Assoc [] | Some cfg -> request_links cfg r );
+     ]
+    @ [
       ("id", `Int r.rq_id);
       ("status", `Int r.rq_status);
       ("status_label", `String (Seerr.request_status_to_string r.rq_status));
@@ -234,7 +249,7 @@ let request_to_compact ?(title : Seerr.title option) (r : Seerr.request) : Yojso
       ("media_status", `Int (Seerr.request_media_status r));
       ("media_status_label", `String (Seerr.media_status_to_string (Seerr.request_media_status r)));
       ("pushed_to_arr", `Bool (pushed_to_arr r));
-    ]
+    ])
 
 let summary_of_request ?(title : Seerr.title option) (r : Seerr.request) extra =
   `Assoc
@@ -586,7 +601,7 @@ let set_request_status (state : App_state.t) ~(request_id : int) ~(approve : boo
     | Ok r ->
         Log_buffer.infof "seerr: request #%d %s" request_id
           (if approve then "approved" else "declined");
-        Lwt.return (Ok (request_to_compact r))
+        Lwt.return (Ok (request_to_compact ~config:cfg r))
 
 (** One page of requests for the UI, enriched with titles. *)
 let list_requests (state : App_state.t) ~(filter : Seerr.request_filter) ~(take : int) :
@@ -607,7 +622,7 @@ let list_requests (state : App_state.t) ~(filter : Seerr.request_filter) ~(take 
           Lwt_list.map_s
             (fun (r : Seerr.request) ->
               let* title = title_of_request s cache r in
-              Lwt.return (request_to_compact ?title r))
+              Lwt.return (request_to_compact ~config:cfg ?title r))
             page.rp_results
         in
         Lwt.return
@@ -852,6 +867,28 @@ let season_rows (state : App_state.t) (inst : Config.instance) ~(series_id : int
              else None)
            summaries)
 
+(* The "open in Sonarr/Radarr" link needs the item's titleSlug, which the
+   cached library listing already carries, so a resolved request costs no
+   extra *arr call.  A listing failure simply means no link. *)
+let arr_link_for (state : App_state.t) (inst : Config.instance) ~(kind : Library.kind)
+    ~(id : int) : string option Lwt.t =
+  let* items = Client.library (App_state.client state inst) in
+  match items with
+  | Error _ -> Lwt.return None
+  | Ok items -> (
+      let want = match kind with Library.Movie -> "movie" | Library.Series -> "series" in
+      match
+        List.find_opt
+          (fun (i : Client.library_item) -> i.li_id = id && i.li_kind = want)
+          items
+      with
+      | None -> Lwt.return None
+      | Some i -> Lwt.return (Library.arr_link inst ~kind ~title_slug:i.li_title_slug))
+
+let links_field = function
+  | None -> ("links", `Assoc [])
+  | Some url -> ("links", `Assoc [ ("arr", `String url) ])
+
 let target_to_yojson (state : App_state.t) (inst : Config.instance) ~(reason : string)
     (target : Fulfil.target) : Yojson.Safe.t Lwt.t =
   let common extra =
@@ -866,12 +903,14 @@ let target_to_yojson (state : App_state.t) (inst : Config.instance) ~(reason : s
   match target with
   | Movies [] | Nothing -> Lwt.return (common [ ("kind", `String "nothing"); ("reason", `String reason) ])
   | Movies (id :: rest) ->
+      let* link = arr_link_for state inst ~kind:Library.Movie ~id in
       Lwt.return
         (common
            [
              ("kind", `String "movie");
              ("media_id", `Int id);
              ("media_ids", `List (List.map (fun i -> `Int i) (id :: rest)));
+             links_field link;
            ])
   | Episodes ids ->
       Lwt.return
@@ -882,12 +921,14 @@ let target_to_yojson (state : App_state.t) (inst : Config.instance) ~(reason : s
            ])
   | Series { series_id; seasons } ->
       let* rows = season_rows state inst ~series_id ~seasons in
+      let* link = arr_link_for state inst ~kind:Library.Series ~id:series_id in
       Lwt.return
         (common
            [
              ("kind", `String "series");
              ("series_id", `Int series_id);
              ("seasons", `List rows);
+             links_field link;
            ])
 
 (** Resolve a request onto the configured instances without running any
@@ -904,7 +945,7 @@ let resolve_request (state : App_state.t) ~(request_id : int) :
     | Ok r -> (
         let cache = title_cache () in
         let* title = title_of_request s cache r in
-        let compact = request_to_compact ?title r in
+        let compact = request_to_compact ~config:cfg ?title r in
         match app_of_media_type r.rq_type with
         | None ->
             Lwt.return
@@ -1009,7 +1050,7 @@ let select_for_request (state : App_state.t) ~(request_id : int) (body : select_
         | Ok (r, just_approved) -> (
             let cache = title_cache () in
             let* title = title_of_request s cache r in
-            let compact = request_to_compact ?title r in
+            let compact = request_to_compact ~config:cfg ?title r in
             match app_of_media_type r.rq_type with
             | None ->
                 Lwt.return

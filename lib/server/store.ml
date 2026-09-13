@@ -113,6 +113,10 @@ type history_entry = {
   h_grabbed : bool;
   h_grab_error : string option;
   h_duration_ms : int;
+  h_links : Yojson.Safe.t;
+      (** "Open in Sonarr/Radarr/Seerr" URLs for the item, computed when the
+          entry is written (see [Library.links_of_media]).  Entries written
+          before links existed decode as an empty object. *)
 }
 
 let now_rfc3339 () = Ptime.to_rfc3339 ~tz_offset_s:0 (Ptime_clock.now ())
@@ -135,7 +139,7 @@ let method_to_string = function
   | Types.By_deterministic_fallback _ -> "deterministic_fallback"
 
 (** Summarise a finished selection for the history log. *)
-let history_entry_of_result ~instance_id (r : Types.selection_result) =
+let history_entry_of_result ~instance_id ?(links = `Assoc []) (r : Types.selection_result) =
   {
     h_timestamp = now_rfc3339 ();
     h_instance_id = instance_id;
@@ -160,6 +164,7 @@ let history_entry_of_result ~instance_id (r : Types.selection_result) =
     h_grabbed = r.grabbed;
     h_grab_error = r.grab_error;
     h_duration_ms = r.duration_ms;
+    h_links = links;
   }
 
 let history_entry_to_yojson (e : history_entry) : Yojson.Safe.t =
@@ -186,6 +191,7 @@ let history_entry_to_yojson (e : history_entry) : Yojson.Safe.t =
       ("grabbed", `Bool e.h_grabbed);
       ("grab_error", opt_str e.h_grab_error);
       ("duration_ms", `Int e.h_duration_ms);
+      ("links", e.h_links);
     ]
 
 let history_entry_of_yojson (j : Yojson.Safe.t) : (history_entry, string) result =
@@ -234,6 +240,10 @@ let history_entry_of_yojson (j : Yojson.Safe.t) : (history_entry, string) result
           h_grabbed = bool "grabbed" false;
           h_grab_error = str_opt "grab_error";
           h_duration_ms = int "duration_ms" 0;
+          h_links =
+            (match Config.member_opt "links" j with
+            | Some (`Assoc _ as l) -> l
+            | _ -> `Assoc []);
         }
   | _ -> Error "history entry must be a JSON object"
 

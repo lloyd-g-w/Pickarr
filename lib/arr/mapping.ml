@@ -217,7 +217,11 @@ let some_int k = function Some v -> [ (k, `Int v) ] | None -> []
 let series_extra (series : Sonarr.series_resource) =
   [ ("series_id", `Int series.Sonarr.sr_id) ]
   @ some_int "tvdb_id" series.Sonarr.sr_tvdb_id
+  @ some_int "tmdb_id" series.Sonarr.sr_tmdb_id
   @ some_string "imdb_id" series.Sonarr.sr_imdb_id
+  (* Both link builders read these: Sonarr's UI addresses a series by
+     titleSlug, Seerr addresses TV by TMDB id. *)
+  @ some_string "title_slug" series.Sonarr.sr_title_slug
   @ some_string "network" series.Sonarr.sr_network
   @ some_string "certification" series.Sonarr.sr_certification
   @ some_string "series_status" series.Sonarr.sr_status
@@ -344,6 +348,7 @@ let media_of_movie ?(tags = []) ?profile_name (m : Radarr.movie_resource) : T.me
     extra =
       some_int "tmdb_id" m.Radarr.mr_tmdb_id
       @ some_string "imdb_id" m.Radarr.mr_imdb_id
+      @ some_string "title_slug" m.Radarr.mr_title_slug
       @ some_string "original_title" m.Radarr.mr_original_title
       @ some_string "studio" m.Radarr.mr_studio
       @ some_string "certification" m.Radarr.mr_certification

@@ -135,3 +135,60 @@ val parse_seerr_webhook : Yojson.Safe.t -> (seerr_event, string) result
 (** Parse the default Seerr webhook JSON payload
     ({notification_type, subject, media:{media_type,tmdbId,tvdbId,...}, extra:[{name,value}]}).
     Numeric ids are accepted as strings (Seerr's template output) or numbers. *)
+
+(* ------------------------------------------------------------------ *)
+(* Library browsing                                                    *)
+(* ------------------------------------------------------------------ *)
+
+(** One row of the library browser: a Sonarr series or a Radarr movie. *)
+type library_item = {
+  li_id : int;  (** Series id (Sonarr) or movie id (Radarr). *)
+  li_kind : string;  (** ["series"] or ["movie"]. *)
+  li_title : string;
+  li_sort_title : string option;
+  li_alternate_titles : string list;
+      (** Alternate titles, plus the original title for a movie: searched
+          along with the title so "Le Fabuleux Destin…" finds "Amélie". *)
+  li_year : int option;
+  li_monitored : bool;
+  li_has_file : bool option;  (** Movies only. *)
+  li_season_count : int option;  (** Series only. *)
+  li_episode_count : int option;  (** Series only: aired, monitored episodes. *)
+  li_missing_count : int option;  (** Series only: aired episodes with no file. *)
+  li_tmdb_id : int option;
+  li_tvdb_id : int option;
+  li_imdb_id : string option;
+  li_title_slug : string option;  (** Addresses the item in the *arr web UI. *)
+}
+
+val library_item_to_yojson : library_item -> Yojson.Safe.t
+
+val library :
+  ?max_age:float -> ?now:(unit -> float) -> t -> (library_item list, error) result Lwt.t
+(** The whole library ([GET /api/v3/series] or [GET /api/v3/movie]), cached
+    per instance for [max_age] seconds (default 60) so that typing in the
+    search box does not re-list the library on every keystroke.  [now] is
+    injectable for tests. *)
+
+val forget_library : t -> unit
+(** Drop the cached library, so the next {!library} call re-fetches.  Used
+    after Pickarr grabs something, and by the UI's explicit refresh. *)
+
+(** One episode of a season, for the library browser. *)
+type episode_summary = {
+  ep_id : int;
+  ep_season_number : int;
+  ep_episode_number : int;
+  ep_title : string option;
+  ep_air_date : string option;
+  ep_has_file : bool;
+  ep_monitored : bool;
+  ep_existing_quality : string option;
+}
+
+val episode_summary_to_yojson : episode_summary -> Yojson.Safe.t
+
+val season_episodes :
+  t -> series_id:int -> season_number:int -> (episode_summary list, error) result Lwt.t
+(** The episodes of one season ([GET /api/v3/episode?seriesId=&seasonNumber=]),
+    ordered by episode number.  Sonarr only. *)

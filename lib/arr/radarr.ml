@@ -78,6 +78,8 @@ type movie_resource = {
   mr_id : int;
   mr_title : string;
   mr_original_title : string option;
+  mr_sort_title : string option;
+  mr_alternate_titles : string list;
   mr_year : int option;
   mr_genres : string list;
   mr_tags : int list;
@@ -94,6 +96,8 @@ type movie_resource = {
   mr_status : string option;
   mr_tmdb_id : int option;
   mr_imdb_id : string option;
+  mr_title_slug : string option;
+      (** Used by the Radarr web UI: /movie/{titleSlug}. *)
   mr_in_cinemas : string option;
   mr_digital_release : string option;
   mr_physical_release : string option;
@@ -105,6 +109,10 @@ let movie_resource_of_yojson j =
     mr_id = J.int_def "id" 0 j;
     mr_title = J.string_def "title" "" j;
     mr_original_title = J.non_empty (J.string_opt "originalTitle" j);
+    mr_sort_title = J.non_empty (J.string_opt "sortTitle" j);
+    mr_alternate_titles =
+      J.list_def "alternateTitles" j
+      |> List.filter_map (fun t -> J.non_empty (J.string_opt "title" t));
     mr_year = (match J.int_opt "year" j with Some 0 -> None | v -> v);
     mr_genres = J.string_list "genres" j;
     mr_tags = J.int_list "tags" j;
@@ -130,6 +138,7 @@ let movie_resource_of_yojson j =
     mr_status = J.non_empty (J.string_opt "status" j);
     mr_tmdb_id = J.int_opt "tmdbId" j;
     mr_imdb_id = J.non_empty (J.string_opt "imdbId" j);
+    mr_title_slug = J.non_empty (J.string_opt "titleSlug" j);
     mr_in_cinemas = J.non_empty (J.string_opt "inCinemas" j);
     mr_digital_release = J.non_empty (J.string_opt "digitalRelease" j);
     mr_physical_release = J.non_empty (J.string_opt "physicalRelease" j);
@@ -177,6 +186,16 @@ let system_status ~base_url ~api_key () =
 let movie ~base_url ~api_key id =
   let* r = Http.get ~base_url ~api_key (Printf.sprintf "/api/v3/movie/%d" id) in
   Lwt.return (map_result movie_resource_of_yojson r)
+
+(** [GET /api/v3/movie]  (the whole library) *)
+let all_movies ~base_url ~api_key () =
+  let* r = Http.get ~base_url ~api_key "/api/v3/movie" in
+  match r with
+  | Error e -> Lwt.return (Error e)
+  | Ok j -> (
+      match J.as_list "movies" j with
+      | Error m -> Lwt.return (Error (Http.Json m))
+      | Ok l -> ok (List.map movie_resource_of_yojson l))
 
 (** [GET /api/v3/movie?tmdbId=]  (lookup by TMDB id; used by the Seerr
     webhook to map a request onto a library movie) *)

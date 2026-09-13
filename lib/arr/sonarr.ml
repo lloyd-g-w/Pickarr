@@ -98,10 +98,22 @@ let release_resource_of_yojson j =
     rr_raw = j;
   }
 
-(** [SeriesResource]: only the fields that inform release selection. *)
+(** Per-season counts from [SeriesResource.seasons[].statistics]. *)
+type season_statistics = {
+  ss_season_number : int;
+  ss_monitored : bool;
+  ss_episode_count : int;  (** Aired, monitored episodes. *)
+  ss_total_episode_count : int;
+  ss_episode_file_count : int;
+}
+
+(** [SeriesResource]: only the fields that inform release selection, plus the
+    identifiers and counts the library browser needs. *)
 type series_resource = {
   sr_id : int;
   sr_title : string;
+  sr_sort_title : string option;
+  sr_alternate_titles : string list;
   sr_year : int option;
   sr_series_type : string option;  (** SeriesTypes: standard | daily | anime *)
   sr_genres : string list;
@@ -116,14 +128,40 @@ type series_resource = {
   sr_monitored : bool;
   sr_status : string option;
   sr_tvdb_id : int option;
+  sr_tmdb_id : int option;
   sr_imdb_id : string option;
+  sr_title_slug : string option;
+      (** Used by the Sonarr web UI: /series/{titleSlug}. *)
   sr_profile_name : string option;
+  sr_season_count : int option;  (** From [statistics.seasonCount]. *)
+  sr_episode_count : int option;  (** From [statistics.episodeCount]. *)
+  sr_episode_file_count : int option;
+  sr_seasons : season_statistics list;
 }
 
+let season_statistics_of_yojson j =
+  let stats = J.member "statistics" j in
+  let stat_int key =
+    match stats with Some s -> J.int_def key 0 s | None -> 0
+  in
+  {
+    ss_season_number = J.int_def "seasonNumber" 0 j;
+    ss_monitored = J.bool_def "monitored" true j;
+    ss_episode_count = stat_int "episodeCount";
+    ss_total_episode_count = stat_int "totalEpisodeCount";
+    ss_episode_file_count = stat_int "episodeFileCount";
+  }
+
 let series_resource_of_yojson j =
+  let statistics = J.member "statistics" j in
+  let stat_int key = Option.bind statistics (fun s -> J.int_opt key s) in
   {
     sr_id = J.int_def "id" 0 j;
     sr_title = J.string_def "title" "" j;
+    sr_sort_title = J.non_empty (J.string_opt "sortTitle" j);
+    sr_alternate_titles =
+      J.list_def "alternateTitles" j
+      |> List.filter_map (fun t -> J.non_empty (J.string_opt "title" t));
     sr_year = (match J.int_opt "year" j with Some 0 -> None | v -> v);
     sr_series_type = J.non_empty (J.string_opt "seriesType" j);
     sr_genres = J.string_list "genres" j;
@@ -141,8 +179,14 @@ let series_resource_of_yojson j =
     sr_monitored = J.bool_def "monitored" true j;
     sr_status = J.non_empty (J.string_opt "status" j);
     sr_tvdb_id = J.int_opt "tvdbId" j;
+    sr_tmdb_id = J.int_opt "tmdbId" j;
     sr_imdb_id = J.non_empty (J.string_opt "imdbId" j);
+    sr_title_slug = J.non_empty (J.string_opt "titleSlug" j);
     sr_profile_name = J.non_empty (J.string_opt "profileName" j);
+    sr_season_count = stat_int "seasonCount";
+    sr_episode_count = stat_int "episodeCount";
+    sr_episode_file_count = stat_int "episodeFileCount";
+    sr_seasons = J.list_def "seasons" j |> List.map season_statistics_of_yojson;
   }
 
 (** [EpisodeResource]. [er_series] is populated when the endpoint was asked
@@ -254,6 +298,17 @@ let series_by_tvdb_id ~base_url ~api_key tvdb_id =
   let* r =
     Http.get ~base_url ~api_key ~query:[ ("tvdbId", string_of_int tvdb_id) ] "/api/v3/series"
   in
+  match r with
+  | Error e -> Lwt.return (Error e)
+  | Ok j -> (
+      match J.as_list "series" j with
+      | Error m -> Lwt.return (Error (Http.Json m))
+      | Ok l -> ok (List.map series_resource_of_yojson l))
+
+(** [GET /api/v3/series]  (the whole library; no query parameters, so the
+    response is every series Sonarr knows about) *)
+let all_series ~base_url ~api_key () =
+  let* r = Http.get ~base_url ~api_key "/api/v3/series" in
   match r with
   | Error e -> Lwt.return (Error e)
   | Ok j -> (

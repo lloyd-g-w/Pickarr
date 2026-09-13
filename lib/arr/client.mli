@@ -163,6 +163,15 @@ type library_item = {
 
 val library_item_to_yojson : library_item -> Yojson.Safe.t
 
+val library_item_of_series : Sonarr.series_resource -> library_item
+(** Pure projection of a [SeriesResource].  The episode counts come from
+    [seasons[].statistics] with the specials (season 0) excluded, which is
+    what the Sonarr UI shows, and fall back to the series-wide [statistics]
+    when the resource carries no season rows. *)
+
+val library_item_of_movie : Radarr.movie_resource -> library_item
+(** Pure projection of a [MovieResource]. *)
+
 val library :
   ?max_age:float -> ?now:(unit -> float) -> t -> (library_item list, error) result Lwt.t
 (** The whole library ([GET /api/v3/series] or [GET /api/v3/movie]), cached
@@ -187,6 +196,7 @@ type episode_summary = {
 }
 
 val episode_summary_to_yojson : episode_summary -> Yojson.Safe.t
+val episode_summary_of_resource : Sonarr.episode_resource -> episode_summary
 
 val season_episodes :
   t -> series_id:int -> season_number:int -> (episode_summary list, error) result Lwt.t

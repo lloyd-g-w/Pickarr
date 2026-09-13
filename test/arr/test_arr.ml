@@ -684,6 +684,121 @@ let test_seerr_filters_and_lenience () =
   let empty = A.Seerr.request_page_of_yojson (`Assoc []) in
   Alcotest.(check int) "no results" 0 (List.length empty.rp_results)
 
+
+(* ------------------------------------------------------------------ *)
+(* Library listings (the Search page's one text box)                   *)
+(* ------------------------------------------------------------------ *)
+
+let series_list () =
+  match load "sonarr_series_list.json" with
+  | `List l -> List.map A.Sonarr.series_resource_of_yojson l
+  | _ -> Alcotest.fail "expected a JSON array"
+
+let movie_list () =
+  match load "radarr_movie_list.json" with
+  | `List l -> List.map A.Radarr.movie_resource_of_yojson l
+  | _ -> Alcotest.fail "expected a JSON array"
+
+let test_series_list_decoding () =
+  match series_list () with
+  | [ show; old ] ->
+      Alcotest.(check int) "id" 12 show.A.Sonarr.sr_id;
+      opt_string "title slug" (Some "some-show") show.A.Sonarr.sr_title_slug;
+      opt_string "sort title" (Some "some show") show.A.Sonarr.sr_sort_title;
+      Alcotest.(check (list string))
+        "alternate titles" [ "Aru Shou"; "Some Show (2019)" ]
+        show.A.Sonarr.sr_alternate_titles;
+      opt_int "tmdb id" (Some 1396) show.A.Sonarr.sr_tmdb_id;
+      opt_int "tvdb id" (Some 7654321) show.A.Sonarr.sr_tvdb_id;
+      opt_int "season count from statistics" (Some 2) show.A.Sonarr.sr_season_count;
+      opt_int "episode count from statistics" (Some 6) show.A.Sonarr.sr_episode_count;
+      opt_int "file count from statistics" (Some 3) show.A.Sonarr.sr_episode_file_count;
+      Alcotest.(check int) "three season rows, specials included" 3
+        (List.length show.A.Sonarr.sr_seasons);
+      (match show.A.Sonarr.sr_seasons with
+      | specials :: season1 :: _ ->
+          Alcotest.(check int) "specials season number" 0 specials.A.Sonarr.ss_season_number;
+          bool_ "specials not monitored" false specials.A.Sonarr.ss_monitored;
+          Alcotest.(check int) "season 1 aired" 4 season1.A.Sonarr.ss_episode_count;
+          Alcotest.(check int) "season 1 on disk" 3 season1.A.Sonarr.ss_episode_file_count;
+          Alcotest.(check int) "season 1 total" 4 season1.A.Sonarr.ss_total_episode_count
+      | _ -> Alcotest.fail "expected season rows");
+      (* A series with no season rows still decodes; the statistics carry it. *)
+      opt_string "second title slug" (Some "old-show") old.A.Sonarr.sr_title_slug;
+      Alcotest.(check int) "no season rows" 0 (List.length old.A.Sonarr.sr_seasons)
+  | other -> Alcotest.failf "expected 2 series, got %d" (List.length other)
+
+let test_movie_list_decoding () =
+  match movie_list () with
+  | [ movie; owned ] ->
+      opt_string "title slug" (Some "some-movie-603") movie.A.Radarr.mr_title_slug;
+      opt_string "sort title" (Some "some movie") movie.A.Radarr.mr_sort_title;
+      Alcotest.(check (list string)) "alternate titles" [ "Another Name" ]
+        movie.A.Radarr.mr_alternate_titles;
+      opt_string "original title" (Some "Un Film Quelconque") movie.A.Radarr.mr_original_title;
+      bool_ "no file" false movie.A.Radarr.mr_has_file;
+      opt_int "tmdb" (Some 603) movie.A.Radarr.mr_tmdb_id;
+      opt_string "imdb" (Some "tt7654321") movie.A.Radarr.mr_imdb_id;
+      bool_ "second movie has a file" true owned.A.Radarr.mr_has_file;
+      opt_string "existing quality" (Some "Bluray-1080p") owned.A.Radarr.mr_movie_file_quality;
+      (* Missing optional fields must not raise. *)
+      Alcotest.(check (list string)) "no alternate titles" []
+        owned.A.Radarr.mr_alternate_titles
+  | other -> Alcotest.failf "expected 2 movies, got %d" (List.length other)
+
+let library_item_of_series_json (s : A.Sonarr.series_resource) =
+  A.Client.library_item_to_yojson (A.Client.library_item_of_series s)
+
+let test_library_items () =
+  match series_list () with
+  | show :: old :: _ ->
+      let item = A.Client.library_item_of_series show in
+      Alcotest.(check string) "kind" "series" item.A.Client.li_kind;
+      Alcotest.(check string) "title" "Some Show" item.A.Client.li_title;
+      (* Specials are excluded from the counts: 4 + 2 aired, 3 + 0 on disk. *)
+      opt_int "aired episodes" (Some 6) item.A.Client.li_episode_count;
+      opt_int "missing episodes" (Some 3) item.A.Client.li_missing_count;
+      opt_int "seasons" (Some 2) item.A.Client.li_season_count;
+      opt_string "slug survives" (Some "some-show") item.A.Client.li_title_slug;
+      (* Without season rows the top-level statistics are used as they are. *)
+      let old_item = A.Client.library_item_of_series old in
+      opt_int "fully downloaded series misses nothing" (Some 0)
+        old_item.A.Client.li_missing_count;
+      (* The JSON the UI reads. *)
+      let json = library_item_of_series_json show in
+      let field k = match json with `Assoc f -> List.assoc_opt k f | _ -> None in
+      Alcotest.(check bool) "has_file is null for a series" true
+        (field "has_file" = Some `Null);
+      Alcotest.(check bool) "title_slug present" true
+        (field "title_slug" = Some (`String "some-show"))
+  | _ -> Alcotest.fail "expected series"
+
+let test_library_items_movie () =
+  match movie_list () with
+  | movie :: _ ->
+      let item = A.Client.library_item_of_movie movie in
+      Alcotest.(check string) "kind" "movie" item.A.Client.li_kind;
+      Alcotest.(check bool) "has a file flag" true (item.A.Client.li_has_file = Some false);
+      (* The original title is searchable alongside the alternates. *)
+      Alcotest.(check (list string)) "searchable titles"
+        [ "Un Film Quelconque"; "Another Name" ]
+        item.A.Client.li_alternate_titles;
+      opt_int "no season count" None item.A.Client.li_season_count
+  | _ -> Alcotest.fail "expected movies"
+
+let test_episode_summary () =
+  match load "sonarr_season_episodes.json" with
+  | `List (first :: _) ->
+      let e = A.Client.episode_summary_of_resource (A.Sonarr.episode_resource_of_yojson first) in
+      Alcotest.(check bool) "episode id is carried" true (e.A.Client.ep_id > 0);
+      let json = A.Client.episode_summary_to_yojson e in
+      let field k = match json with `Assoc f -> List.assoc_opt k f | _ -> None in
+      Alcotest.(check bool) "season number present" true
+        (match field "season_number" with Some (`Int _) -> true | _ -> false);
+      Alcotest.(check bool) "has_file present" true
+        (match field "has_file" with Some (`Bool _) -> true | _ -> false)
+  | _ -> Alcotest.fail "expected an episode array"
+
 let tests =
   [
     ("sonarr release mapping", `Quick, test_sonarr_release_mapping);
@@ -701,6 +816,11 @@ let tests =
     ("grab identity guards", `Quick, test_grab_identity_guards);
     ("webhooks", `Quick, test_webhooks);
     ("seerr webhook", `Quick, test_seerr_webhook);
+    ("series list decoding", `Quick, test_series_list_decoding);
+    ("movie list decoding", `Quick, test_movie_list_decoding);
+    ("library items", `Quick, test_library_items);
+    ("library items (movie)", `Quick, test_library_items_movie);
+    ("episode summaries", `Quick, test_episode_summary);
     ("seerr requests", `Quick, test_seerr_requests);
     ("seerr pending and counts", `Quick, test_seerr_pending_and_counts);
     ("seerr titles", `Quick, test_seerr_titles);

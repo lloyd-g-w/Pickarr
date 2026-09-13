@@ -10,6 +10,8 @@ module Auth = Pickarr_server.Auth
 module Seerr = Pickarr_arr.Seerr
 module Seerr_sync = Pickarr_server.Seerr_sync
 module Fulfil = Pickarr_server.Fulfil
+module Library = Pickarr_server.Library
+module Client = Pickarr_arr.Client
 
 let temp_dir prefix =
   let dir =
@@ -1110,6 +1112,255 @@ let test_decide_browser_pages () =
   Alcotest.check decision "disabled authentication" Auth.Allow
     (decide ~kind:Auth.Browser_page ~auth_required:false ~configured:false "/")
 
+(* ------------------------------------------------------------------ *)
+(* Library search and the "open in ..." links                          *)
+(* ------------------------------------------------------------------ *)
+
+let series_item ?(id = 1) ?(title = "Breaking Bad") ?sort ?(alts = []) ?(year = 2008)
+    ?slug ?tmdb ?tvdb ?imdb () : Client.library_item =
+  {
+    Client.li_id = id;
+    li_kind = "series";
+    li_title = title;
+    li_sort_title = sort;
+    li_alternate_titles = alts;
+    li_year = Some year;
+    li_monitored = true;
+    li_has_file = None;
+    li_season_count = Some 5;
+    li_episode_count = Some 62;
+    li_missing_count = Some 2;
+    li_tmdb_id = tmdb;
+    li_tvdb_id = tvdb;
+    li_imdb_id = imdb;
+    li_title_slug = slug;
+  }
+
+let movie_item ?(id = 7) ?(title = "The Matrix") ?(alts = []) ?slug ?tmdb ?imdb () :
+    Client.library_item =
+  {
+    Client.li_id = id;
+    li_kind = "movie";
+    li_title = title;
+    li_sort_title = None;
+    li_alternate_titles = alts;
+    li_year = Some 1999;
+    li_monitored = true;
+    li_has_file = Some false;
+    li_season_count = None;
+    li_episode_count = None;
+    li_missing_count = None;
+    li_tmdb_id = tmdb;
+    li_tvdb_id = None;
+    li_imdb_id = imdb;
+    li_title_slug = slug;
+  }
+
+let titles (items : Client.library_item list) =
+  List.map (fun (i : Client.library_item) -> i.Client.li_title) items
+
+let test_library_search_by_title () =
+  let items =
+    [
+      series_item ~id:1 ~title:"Breaking Bad" ();
+      series_item ~id:2 ~title:"Better Call Saul" ~sort:"better call saul" ();
+      movie_item ~id:3 ~title:"Amelie" ~alts:[ "Le Fabuleux Destin d'Amelie Poulain" ] ();
+    ]
+  in
+  Alcotest.(check (list string)) "case-insensitive substring" [ "Breaking Bad" ]
+    (titles (Library.search "breaking" items));
+  Alcotest.(check (list string)) "matches the middle of a title" [ "Better Call Saul" ]
+    (titles (Library.search "call" items));
+  Alcotest.(check (list string)) "matches an alternate title" [ "Amelie" ]
+    (titles (Library.search "fabuleux" items));
+  Alcotest.(check (list string)) "matches the sort title" [ "Better Call Saul" ]
+    (titles (Library.search "better call" items));
+  Alcotest.(check (list string)) "no match" [] (titles (Library.search "zzz" items));
+  (* An empty query lists everything, alphabetically. *)
+  Alcotest.(check (list string)) "empty query lists all"
+    [ "Amelie"; "Better Call Saul"; "Breaking Bad" ]
+    (titles (Library.search "" items));
+  (* An exact title wins over a longer title that merely contains it. *)
+  let both = [ series_item ~id:4 ~title:"The Office (US)" (); movie_item ~id:5 ~title:"The Office" () ] in
+  Alcotest.(check (list string)) "exact title first" [ "The Office"; "The Office (US)" ]
+    (titles (Library.search "the office" both))
+
+let test_library_search_by_id () =
+  let items =
+    [
+      series_item ~id:12 ~title:"Breaking Bad" ~tvdb:81189 ~tmdb:1396
+        ~imdb:"tt0903747" ();
+      movie_item ~id:77 ~title:"The Matrix" ~tmdb:603 ~imdb:"tt0133093" ();
+    ]
+  in
+  Alcotest.(check (list string)) "the *arr id" [ "Breaking Bad" ]
+    (titles (Library.search "12" items));
+  Alcotest.(check (list string)) "the movie id" [ "The Matrix" ]
+    (titles (Library.search "77" items));
+  Alcotest.(check (list string)) "a TMDB id" [ "The Matrix" ]
+    (titles (Library.search "603" items));
+  Alcotest.(check (list string)) "a TheTVDB id" [ "Breaking Bad" ]
+    (titles (Library.search "81189" items));
+  Alcotest.(check (list string)) "an IMDb id" [ "The Matrix" ]
+    (titles (Library.search "tt0133093" items));
+  Alcotest.(check (list string)) "IMDb ids are case-insensitive" [ "Breaking Bad" ]
+    (titles (Library.search "TT0903747" items));
+  (* A number must not fall through to a substring match on the title. *)
+  Alcotest.(check (list string)) "an unknown number matches nothing" []
+    (titles (Library.search "1999" items));
+  Alcotest.(check (list string)) "an unknown IMDb id matches nothing" []
+    (titles (Library.search "tt9999999" items))
+
+let test_library_search_limit () =
+  let items = List.init 60 (fun n -> series_item ~id:(n + 1) ~title:(Printf.sprintf "Show %02d" n) ()) in
+  Alcotest.(check int) "capped at 25" 25 (List.length (Library.search "show" items));
+  Alcotest.(check int) "the cap is the documented one" 25 Library.max_results;
+  Alcotest.(check int) "an empty query is capped too" 25 (List.length (Library.search "" items))
+
+let instance_named ?(id = "sonarr") ?(app = Types.Sonarr) ?(url = "http://sonarr:8989") () =
+  {
+    Config.inst_id = id;
+    inst_name = id;
+    inst_app = app;
+    inst_url = url;
+    inst_api_key = "k";
+    inst_enabled = true;
+    inst_nl_preferences = "";
+    inst_automatic = false;
+  }
+
+let config_with_seerr url =
+  { Config.default with seerr = { Config.default_seerr with seerr_url = url } }
+
+let test_links_arr () =
+  let sonarr = instance_named () in
+  let radarr = instance_named ~id:"radarr" ~app:Types.Radarr ~url:"http://radarr:7878/" () in
+  (* Both front ends address an item by titleSlug: Sonarr /series/{slug}
+     (frontend AppRoutes.tsx) and Radarr /movie/{slug} (AppRoutes.tsx plus
+     MovieTitleLink.tsx). *)
+  Alcotest.(check (option string)) "sonarr series"
+    (Some "http://sonarr:8989/series/breaking-bad")
+    (Library.arr_link sonarr ~kind:Library.Series ~title_slug:(Some "breaking-bad"));
+  Alcotest.(check (option string)) "radarr movie, trailing slash trimmed"
+    (Some "http://radarr:7878/movie/the-matrix-603")
+    (Library.arr_link radarr ~kind:Library.Movie ~title_slug:(Some "the-matrix-603"));
+  Alcotest.(check (option string)) "no slug, no link" None
+    (Library.arr_link sonarr ~kind:Library.Series ~title_slug:None);
+  Alcotest.(check (option string)) "blank slug, no link" None
+    (Library.arr_link sonarr ~kind:Library.Series ~title_slug:(Some "  "));
+  Alcotest.(check (option string)) "no instance url, no link" None
+    (Library.arr_link (instance_named ~url:"" ()) ~kind:Library.Series
+       ~title_slug:(Some "breaking-bad"))
+
+let test_links_seerr () =
+  let cfg = config_with_seerr "http://seerr:5055/" in
+  (* Seerr keys both kinds by TMDB id: {url}/movie/{tmdbId} or {url}/tv/{tmdbId}. *)
+  Alcotest.(check (option string)) "tv" (Some "http://seerr:5055/tv/1396")
+    (Library.seerr_link cfg ~kind:Library.Series ~tmdb_id:(Some 1396));
+  Alcotest.(check (option string)) "movie" (Some "http://seerr:5055/movie/603")
+    (Library.seerr_link cfg ~kind:Library.Movie ~tmdb_id:(Some 603));
+  Alcotest.(check (option string)) "no tmdb id, no link" None
+    (Library.seerr_link cfg ~kind:Library.Movie ~tmdb_id:None);
+  Alcotest.(check (option string)) "zero tmdb id, no link" None
+    (Library.seerr_link cfg ~kind:Library.Movie ~tmdb_id:(Some 0));
+  Alcotest.(check (option string)) "seerr not configured, no link" None
+    (Library.seerr_link Config.default ~kind:Library.Movie ~tmdb_id:(Some 603))
+
+let links_of json =
+  match json with
+  | `Assoc fields -> ( match List.assoc_opt "links" fields with Some l -> l | None -> `Null)
+  | _ -> `Null
+
+let test_links_decorate () =
+  let cfg = config_with_seerr "http://seerr:5055" in
+  let inst = instance_named () in
+  let media =
+    `Assoc
+      [
+        ("app", `String "sonarr");
+        ("media_id", `Int 5150);
+        ("media_kind", `String "episode");
+        ("title", `String "Breaking Bad");
+        ("title_slug", `String "breaking-bad");
+        ("tmdb_id", `Int 1396);
+      ]
+  in
+  (* An episode links to its series page, wherever the media sits. *)
+  let decorated =
+    Library.decorate ~config:cfg ~instance:(Some inst)
+      (`Assoc [ ("media", media); ("candidates", `List [ `Assoc [ ("id", `String "r1") ] ]) ])
+  in
+  let inner = match decorated with `Assoc f -> List.assoc "media" f | _ -> `Null in
+  Alcotest.(check string) "episode links to the series page and to Seerr"
+    {|{"arr":"http://sonarr:8989/series/breaking-bad","seerr":"http://seerr:5055/tv/1396"}|}
+    (Yojson.Safe.to_string (links_of inner));
+  (* Nested media are decorated too: one season per whole-series result. *)
+  let nested =
+    Library.decorate ~config:cfg ~instance:(Some inst)
+      (`Assoc [ ("seasons", `List [ `Assoc [ ("selection", `Assoc [ ("media", media) ]) ] ]) ])
+  in
+  Alcotest.(check bool) "nested media decorated" true
+    (contains ~needle:"http://sonarr:8989/series/breaking-bad" (Yojson.Safe.to_string nested));
+  (* Objects that are not media are left alone. *)
+  let untouched = Library.decorate ~config:cfg ~instance:(Some inst) (`Assoc [ ("total", `Int 3) ]) in
+  Alcotest.(check string) "not a media object" {|{"total":3}|} (Yojson.Safe.to_string untouched);
+  (* With no instance the app's default instance is used, so the routes that
+     select on "sonarr"/"radarr" still produce an *arr link. *)
+  let cfg_with_instance = { cfg with instances = [ inst ] } in
+  let defaulted = Library.decorate ~config:cfg_with_instance ~instance:None (`Assoc [ ("media", media) ]) in
+  let inner = match defaulted with `Assoc f -> List.assoc "media" f | _ -> `Null in
+  Alcotest.(check bool) "app default instance used" true
+    (contains ~needle:"http://sonarr:8989/series/breaking-bad"
+       (Yojson.Safe.to_string (links_of inner)));
+  (* Nothing linkable means no links key at all, not an empty object. *)
+  let bare =
+    Library.decorate ~config:Config.default ~instance:None
+      (`Assoc
+        [
+          ("media", `Assoc [ ("app", `String "sonarr"); ("media_id", `Int 1); ("media_kind", `String "episode") ]);
+        ])
+  in
+  let inner = match bare with `Assoc f -> List.assoc "media" f | _ -> `Null in
+  Alcotest.(check string) "no links key" "null" (Yojson.Safe.to_string (links_of inner))
+
+let test_library_item_json () =
+  let cfg = config_with_seerr "http://seerr:5055" in
+  let inst = instance_named ~id:"radarr" ~app:Types.Radarr ~url:"http://radarr:7878" () in
+  let json =
+    Library.item_to_yojson ~instance:inst ~config:cfg
+      (movie_item ~slug:"the-matrix-603" ~tmdb:603 ())
+  in
+  let field k = match json with `Assoc f -> List.assoc_opt k f | _ -> None in
+  Alcotest.(check (option string)) "kind" (Some "movie")
+    (match field "kind" with Some (`String s) -> Some s | _ -> None);
+  Alcotest.(check bool) "has_file is a bool, not null" true
+    (match field "has_file" with Some (`Bool _) -> true | _ -> false);
+  Alcotest.(check string) "both links"
+    {|{"arr":"http://radarr:7878/movie/the-matrix-603","seerr":"http://seerr:5055/movie/603"}|}
+    (Yojson.Safe.to_string (links_of json))
+
+let test_history_links_round_trip () =
+  let dir = temp_dir "pickarr-history-links" in
+  let store = store_of dir in
+  let links = `Assoc [ ("arr", `String "http://sonarr:8989/series/breaking-bad") ] in
+  let entry = Store.history_entry_of_result ~instance_id:"sonarr" ~links (result_of ()) in
+  run (Store.append_history store entry);
+  match run (Store.read_history store ~limit:10) with
+  | [] -> Alcotest.fail "no history entry"
+  | e :: _ ->
+      Alcotest.(check string) "links persisted"
+        (Yojson.Safe.to_string links)
+        (Yojson.Safe.to_string e.Store.h_links);
+      (* An entry written before links existed decodes as an empty object,
+         never as null, so the UI can read it without a guard. *)
+      (match
+         Store.history_entry_of_yojson
+           (`Assoc [ ("timestamp", `String "2026-01-01T00:00:00Z"); ("instance_id", `String "x") ])
+       with
+      | Ok old -> Alcotest.(check string) "older entries have no links" "{}"
+                    (Yojson.Safe.to_string old.Store.h_links)
+      | Error m -> Alcotest.fail m)
+
 let () =
   Alcotest.run "pickarr-server"
     [
@@ -1186,6 +1437,17 @@ let () =
           Alcotest.test_case "setup and login" `Quick test_auth_setup_and_login;
           Alcotest.test_case "api key and toggle" `Quick test_auth_api_key_and_toggle;
           Alcotest.test_case "env credentials" `Quick test_auth_env_credentials;
+        ] );
+      ( "library",
+        [
+          Alcotest.test_case "search by title" `Quick test_library_search_by_title;
+          Alcotest.test_case "search by id" `Quick test_library_search_by_id;
+          Alcotest.test_case "result limit" `Quick test_library_search_limit;
+          Alcotest.test_case "arr links" `Quick test_links_arr;
+          Alcotest.test_case "seerr links" `Quick test_links_seerr;
+          Alcotest.test_case "decorate" `Quick test_links_decorate;
+          Alcotest.test_case "item json" `Quick test_library_item_json;
+          Alcotest.test_case "history links" `Quick test_history_links_round_trip;
         ] );
       ( "authorisation",
         [

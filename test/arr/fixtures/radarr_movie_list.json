@@ -1,0 +1,44 @@
+[
+  {
+    "id": 77,
+    "title": "Some Movie",
+    "originalTitle": "Un Film Quelconque",
+    "sortTitle": "some movie",
+    "alternateTitles": [
+      { "id": 1, "sourceType": "tmdb", "movieMetadataId": 5, "title": "Another Name", "cleanTitle": "anothername" }
+    ],
+    "sizeOnDisk": 0,
+    "status": "released",
+    "overview": "A movie.",
+    "year": 2024,
+    "path": "/movies/Some Movie (2024)",
+    "qualityProfileId": 4,
+    "hasFile": false,
+    "movieFileId": 0,
+    "monitored": true,
+    "minimumAvailability": "released",
+    "isAvailable": true,
+    "runtime": 130,
+    "cleanTitle": "somemovie",
+    "imdbId": "tt7654321",
+    "tmdbId": 603,
+    "titleSlug": "some-movie-603",
+    "certification": "PG-13",
+    "genres": ["Action"],
+    "tags": [],
+    "added": "2024-01-01T00:00:00Z",
+    "popularity": 12.5,
+    "statistics": { "movieFileCount": 0, "sizeOnDisk": 0, "releaseGroups": [] }
+  },
+  {
+    "id": 78,
+    "title": "Owned Movie",
+    "sortTitle": "owned movie",
+    "year": 2001,
+    "hasFile": true,
+    "monitored": true,
+    "tmdbId": 604,
+    "titleSlug": "owned-movie-604",
+    "movieFile": { "id": 9, "movieId": 78, "quality": { "quality": { "id": 7, "name": "Bluray-1080p" } } }
+  }
+]

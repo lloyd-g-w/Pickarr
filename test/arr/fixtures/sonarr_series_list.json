@@ -1,0 +1,94 @@
+[
+  {
+    "id": 12,
+    "title": "Some Show",
+    "sortTitle": "some show",
+    "alternateTitles": [
+      { "title": "Aru Shou", "seasonNumber": -1 },
+      { "title": "Some Show (2019)", "seasonNumber": -1 }
+    ],
+    "status": "continuing",
+    "ended": false,
+    "overview": "A show.",
+    "network": "Example Network",
+    "year": 2019,
+    "path": "/tv/Some Show",
+    "qualityProfileId": 6,
+    "seasonFolder": true,
+    "monitored": true,
+    "runtime": 45,
+    "tvdbId": 7654321,
+    "tvRageId": 0,
+    "tvMazeId": 0,
+    "tmdbId": 1396,
+    "seriesType": "anime",
+    "cleanTitle": "someshow",
+    "imdbId": "tt1234567",
+    "titleSlug": "some-show",
+    "certification": "TV-MA",
+    "genres": ["Animation", "Action"],
+    "tags": [1, 3],
+    "added": "2020-01-01T00:00:00Z",
+    "seasons": [
+      {
+        "seasonNumber": 0,
+        "monitored": false,
+        "statistics": {
+          "episodeFileCount": 0,
+          "episodeCount": 2,
+          "totalEpisodeCount": 2,
+          "sizeOnDisk": 0,
+          "percentOfEpisodes": 0
+        }
+      },
+      {
+        "seasonNumber": 1,
+        "monitored": true,
+        "statistics": {
+          "episodeFileCount": 3,
+          "episodeCount": 4,
+          "totalEpisodeCount": 4,
+          "sizeOnDisk": 10737418240,
+          "percentOfEpisodes": 75
+        }
+      },
+      {
+        "seasonNumber": 2,
+        "monitored": true,
+        "statistics": {
+          "episodeFileCount": 0,
+          "episodeCount": 2,
+          "totalEpisodeCount": 3,
+          "sizeOnDisk": 0,
+          "percentOfEpisodes": 0
+        }
+      }
+    ],
+    "statistics": {
+      "seasonCount": 2,
+      "episodeFileCount": 3,
+      "episodeCount": 6,
+      "totalEpisodeCount": 9,
+      "sizeOnDisk": 10737418240,
+      "percentOfEpisodes": 50
+    }
+  },
+  {
+    "id": 13,
+    "title": "Old Show",
+    "sortTitle": "old show",
+    "year": 1999,
+    "monitored": false,
+    "tvdbId": 111,
+    "titleSlug": "old-show",
+    "seasons": [],
+    "statistics": {
+      "seasonCount": 1,
+      "episodeFileCount": 5,
+      "episodeCount": 5,
+      "totalEpisodeCount": 5,
+      "sizeOnDisk": 1073741824,
+      "percentOfEpisodes": 100
+    }
+  }
+]

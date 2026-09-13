@@ -1,0 +1,4 @@
+(library
+ (name selectarr_arr)
+ (public_name selectarr.arr)
+ (libraries selectarr_core yojson lwt lwt.unix cohttp cohttp-lwt cohttp-lwt-unix uri logs logs.lwt))

@@ -1,0 +1,4 @@
+(library
+ (name selectarr_server)
+ (public_name selectarr.server)
+ (libraries selectarr_core selectarr_arr selectarr_llm dream yojson lwt lwt.unix logs logs.lwt ptime ptime.clock.os))

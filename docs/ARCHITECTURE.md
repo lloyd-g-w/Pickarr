@@ -173,9 +173,14 @@ end
 (* lib/core/prompt.ml — Stage 4 input, pure *)
 module Prompt : sig
   val system_prompt : string
-  (** Builds the JSON user message with keys exactly:
-      hard_constraints, structured_preferences, natural_language_preferences,
-      temporary_instruction, media, candidates (top-N scored, never rejected). *)
+  (** Builds the JSON user message with keys exactly (in this order):
+      media, hard_constraints, structured_preferences,
+      natural_language_preferences, temporary_instruction, candidates.
+      Candidates are sent with SHORT ids "r1".."rN" (never guids, magnet
+      links, URLs or info hashes, which small models mangle); the returned
+      association list maps short id -> real release id. *)
+  val build_with_ids : config:Config.t -> instance:Config.instance option -> media:Types.media
+              -> ?instruction:string -> Types.scored_release list -> string * (string * string) list
   val build : config:Config.t -> instance:Config.instance option -> media:Types.media
               -> ?instruction:string -> Types.scored_release list -> string
 end
@@ -183,8 +188,13 @@ end
 (* lib/core/llm_response.ml — Stage 4 validation, pure *)
 module Llm_response : sig
   (** Validate {selected_id, confidence, reason, ranking[{id,score,reason}], influences?, conflicts?}.
-      Errors: unknown selected_id, unknown ranking id, duplicate ids, score
-      outside 0..100, confidence outside 0..1, missing fields. Never raises. *)
+      selected_id must resolve to a candidate (tolerant of case/quotes/"#3"/
+      "candidate 3"/exact title via [aliases]); otherwise Error (=> fallback).
+      Ranking entries with unknown ids are dropped, duplicates keep the first,
+      scores/confidence are clamped — each repair is reported as a warning
+      that the pipeline surfaces as "AI response note: ...". Never raises. *)
+  val parse_with_warnings : candidate_ids:string list -> ?aliases:(string * string) list
+                            -> Yojson.Safe.t -> (Types.llm_decision * string list, string) result
   val parse : candidate_ids:string list -> Yojson.Safe.t -> (Types.llm_decision, string) result
 end
 

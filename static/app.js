@@ -218,6 +218,50 @@ const hardRulesSchema = [
   },
 ];
 
+/* Season packs. The config stores a 0..1 fraction; the form shows a
+   percentage, which is easier to reason about. */
+const seasonsSchema = [
+  {
+    key: "prefer_packs",
+    label: "Prefer season packs",
+    type: "bool",
+    hint: "off = always select episode by episode",
+  },
+  {
+    key: "min_missing_percent",
+    label: "Use a pack when this much of the season is missing (%)",
+    type: "int",
+    min: 0,
+    max: 100,
+    hint: "100 = only for a completely missing season",
+  },
+  {
+    key: "fallback_to_episodes",
+    label: "Fall back to single episodes",
+    type: "bool",
+    hint: "when no acceptable pack exists, or the pack grab fails",
+  },
+];
+
+function seasonsToForm(seasons) {
+  const s = seasons || {};
+  return {
+    prefer_packs: s.prefer_packs !== false,
+    min_missing_percent: Math.round((s.min_missing_fraction || 0) * 100),
+    fallback_to_episodes: s.fallback_to_episodes !== false,
+  };
+}
+
+function seasonsFromForm() {
+  const v = readForm($("#seasons-form"), seasonsSchema);
+  const percent = Math.min(100, Math.max(0, v.min_missing_percent || 0));
+  return {
+    prefer_packs: v.prefer_packs,
+    min_missing_fraction: percent / 100,
+    fallback_to_episodes: v.fallback_to_episodes,
+  };
+}
+
 const preferencesSchema = [
   { key: "preferred_codecs", label: "Preferred codecs", type: "list", placeholder: "x265, x264" },
   { key: "disliked_codecs", label: "Disliked codecs", type: "list" },
@@ -543,8 +587,8 @@ function releaseRow(scored, isWinner) {
   );
 }
 
-function renderSelectionResult(result) {
-  const container = $("#select-result");
+function renderSelectionResult(result, target) {
+  const container = target || $("#select-result");
   const children = [];
   const method = result.method || {};
   const media = result.media || {};
@@ -709,6 +753,269 @@ function renderSelectionResult(result) {
   }
 
   container.replaceChildren(...children.filter(Boolean));
+}
+
+/* ------------------------------------------------------------------ */
+/* seasons and whole series (Sonarr)                                   */
+/* ------------------------------------------------------------------ */
+
+function selectedInstance() {
+  const id = $("#select-instance").value;
+  const instances = (state.config && state.config.instances) || [];
+  return instances.find((i) => i.id === id) || null;
+}
+
+function selectMode() {
+  return $("#select-what").value;
+}
+
+/* Seasons only exist in Sonarr, so the extra modes are disabled for a
+   Radarr instance. */
+function updateSelectMode() {
+  const instance = selectedInstance();
+  const isSonarr = !instance || instance.app === "sonarr";
+  for (const option of $("#select-what").options) {
+    if (option.value !== "media") option.disabled = !isSonarr;
+  }
+  if (!isSonarr && selectMode() !== "media") $("#select-what").value = "media";
+
+  const mode = selectMode();
+  $("#select-media-row").hidden = mode !== "media";
+  $("#select-series-block").hidden = mode === "media";
+  $("#select-season-label").hidden = mode !== "season";
+  $("#select-seasons-label").hidden = mode !== "series";
+}
+
+function selectionBody(grab) {
+  const body = { grab: grab, use_ai: $("#select-use-ai").checked };
+  const instruction = $("#select-instruction").value.trim();
+  if (instruction) body.instruction = instruction;
+  return body;
+}
+
+function parsedSeasonList() {
+  return $("#select-seasons")
+    .value.split(",")
+    .map((s) => parseInt(s.trim(), 10))
+    .filter((n) => !Number.isNaN(n));
+}
+
+async function loadSeasons() {
+  const instanceId = $("#select-instance").value;
+  const seriesId = parseInt($("#select-series-id").value, 10);
+  if (!instanceId) return toast("Configure an instance first", true);
+  if (!seriesId || seriesId < 1) return toast("Enter a series id", true);
+  const container = $("#seasons-list");
+  setResult("#seasons-status", "loading…", true);
+  container.replaceChildren();
+  try {
+    const data = await api(`/api/series/${encodeURIComponent(instanceId)}/${seriesId}`);
+    setResult("#seasons-status", "", true);
+    renderSeasons(data);
+  } catch (e) {
+    setResult("#seasons-status", e.message, false);
+    toast(e.message, true);
+  }
+}
+
+function renderSeasons(data) {
+  const container = $("#seasons-list");
+  const series = data.series || {};
+  const seasons = data.seasons || [];
+  if (!seasons.length) {
+    container.replaceChildren(el("p", { class: "hint" }, "This series has no seasons."));
+    return;
+  }
+  container.replaceChildren(
+    el(
+      "div",
+      { class: "panel" },
+      el("strong", {}, series.title || "unknown"),
+      series.year ? ` (${series.year})` : "",
+      el(
+        "div",
+        { class: "hint" },
+        `${data.missing_episodes ?? "?"} of ${data.total_episodes ?? "?"} episode(s) missing`
+      )
+    ),
+    el(
+      "table",
+      {},
+      el(
+        "thead",
+        {},
+        el("tr", {}, ["Season", "Missing", "On disk", "Monitored", ""].map((h) => el("th", {}, h)))
+      ),
+      el(
+        "tbody",
+        {},
+        ...seasons.map((s) =>
+          el(
+            "tr",
+            {},
+            el("td", {}, s.season_number === 0 ? "Specials" : `Season ${s.season_number}`),
+            el("td", {}, `${s.missing_episodes} / ${s.total_episodes}`),
+            el("td", {}, s.existing_quality || "—"),
+            el("td", {}, s.monitored ? "yes" : "no"),
+            el(
+              "td",
+              {},
+              el(
+                "button",
+                {
+                  class: "small",
+                  onclick: () => {
+                    $("#select-what").value = "season";
+                    $("#select-season-number").value = s.season_number;
+                    updateSelectMode();
+                    runSeasonSelection(false);
+                  },
+                },
+                "Select"
+              ),
+              " ",
+              el(
+                "button",
+                {
+                  class: "small danger",
+                  onclick: () => {
+                    if (!confirm(`Grab a pack for season ${s.season_number}?`)) return;
+                    $("#select-what").value = "season";
+                    $("#select-season-number").value = s.season_number;
+                    updateSelectMode();
+                    runSeasonSelection(true);
+                  },
+                },
+                "Select & grab"
+              )
+            )
+          )
+        )
+      )
+    )
+  );
+}
+
+async function runSeasonSelection(grab) {
+  const instanceId = $("#select-instance").value;
+  const seriesId = parseInt($("#select-series-id").value, 10);
+  const season = parseInt($("#select-season-number").value, 10);
+  if (!instanceId) return toast("Configure an instance first", true);
+  if (!seriesId || seriesId < 1) return toast("Enter a series id", true);
+  if (Number.isNaN(season) || season < 0) return toast("Enter a season number", true);
+  setResult("#select-status", grab ? "selecting a pack and grabbing…" : "selecting a pack…", true);
+  $("#select-result").replaceChildren();
+  try {
+    const result = await api(
+      `/api/select/${encodeURIComponent(instanceId)}/season/${seriesId}/${season}`,
+      { method: "POST", body: JSON.stringify(selectionBody(grab)) }
+    );
+    state.lastResult = result;
+    setResult("#select-status", `done in ${result.duration_ms} ms`, true);
+    renderSelectionResult(result);
+    if (grab) loadHistory();
+  } catch (e) {
+    setResult("#select-status", e.message, false);
+    toast(e.message, true);
+  }
+}
+
+async function runSeriesSelection(grab) {
+  const instanceId = $("#select-instance").value;
+  const seriesId = parseInt($("#select-series-id").value, 10);
+  if (!instanceId) return toast("Configure an instance first", true);
+  if (!seriesId || seriesId < 1) return toast("Enter a series id", true);
+  const body = selectionBody(grab);
+  const seasons = parsedSeasonList();
+  if (seasons.length) body.seasons = seasons;
+  setResult("#select-status", grab ? "selecting the series and grabbing…" : "selecting the series…", true);
+  $("#select-result").replaceChildren();
+  try {
+    const result = await api(`/api/select/${encodeURIComponent(instanceId)}/series/${seriesId}`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    state.lastResult = result;
+    const s = result.summary || {};
+    setResult("#select-status", `${s.seasons || 0} season(s), ${s.grabbed || 0} grabbed`, true);
+    renderSeriesResult(result);
+  } catch (e) {
+    setResult("#select-status", e.message, false);
+    toast(e.message, true);
+  }
+}
+
+function renderSeriesResult(result) {
+  const container = $("#select-result");
+  const series = result.series || {};
+  const summary = result.summary || {};
+  const children = [
+    el(
+      "div",
+      { class: "panel" },
+      el("strong", {}, series.title || "unknown"),
+      series.year ? ` (${series.year})` : "",
+      el(
+        "div",
+        { class: "hint" },
+        `${summary.seasons || 0} season(s) considered · ${summary.selections || 0} selection(s) · ` +
+          `${summary.selected || 0} with a winner · ${summary.grabbed || 0} grabbed`
+      )
+    ),
+  ];
+
+  for (const season of result.seasons || []) {
+    const label = season.season_number === 0 ? "Specials" : `Season ${season.season_number}`;
+    const head = el(
+      "div",
+      {},
+      el("strong", {}, label),
+      el("span", { class: "hint-inline" }, ` ${season.missing} of ${season.total} missing`)
+    );
+    const outcome = season.outcome || {};
+    const body = el("div", {});
+    if (outcome.kind === "pack") {
+      head.appendChild(el("span", { class: "badge" }, "season pack"));
+      renderSelectionResult(outcome.selection, body);
+    } else if (outcome.kind === "episodes") {
+      head.appendChild(
+        el("span", { class: "badge" }, `${(outcome.selections || []).length} episode selection(s)`)
+      );
+      for (const selection of outcome.selections || []) {
+        const card = el("div", {});
+        renderSelectionResult(selection, card);
+        body.appendChild(el("details", {}, el("summary", {}, selectionLabel(selection)), card));
+      }
+    } else {
+      head.appendChild(el("span", { class: "badge" }, "skipped"));
+      body.appendChild(el("div", { class: "hint" }, outcome.reason || "skipped"));
+    }
+    children.push(el("div", { class: "panel" }, head, body));
+  }
+
+  container.replaceChildren(...children);
+}
+
+function selectionLabel(selection) {
+  const media = selection.media || {};
+  const episode =
+    media.season_number !== null && media.episode_number !== null && media.episode_number !== undefined
+      ? ` S${String(media.season_number).padStart(2, "0")}E${String(media.episode_number).padStart(2, "0")}`
+      : "";
+  const title = selection.selected ? selection.selected.release.title : "nothing selected";
+  return `${media.title || ""}${episode} — ${title}${selection.grabbed ? " (grabbed)" : ""}`;
+}
+
+/* The Preview / Select & grab buttons act on whatever mode is selected. */
+function runCurrentSelection(grab) {
+  switch (selectMode()) {
+    case "season":
+      return runSeasonSelection(grab);
+    case "series":
+      return runSeriesSelection(grab);
+    default:
+      return runSelection(grab);
+  }
 }
 
 async function loadWanted() {
@@ -1210,6 +1517,7 @@ async function loadConfig() {
   renderRules();
   buildForm($("#llm-form"), llmSchema, state.config.llm);
   buildForm($("#automatic-form"), automaticSchema, state.config.automatic);
+  buildForm($("#seasons-form"), seasonsSchema, seasonsToForm(state.config.seasons));
   renderInstancesEditor();
   renderInstanceOptions();
   renderDashboardInstances();
@@ -1251,11 +1559,17 @@ function wire() {
     button.addEventListener("click", () => showTab(button.dataset.tab));
   }
 
-  $("#btn-preview").addEventListener("click", () => runSelection(false));
+  $("#btn-preview").addEventListener("click", () => runCurrentSelection(false));
   $("#btn-grab").addEventListener("click", () => {
-    if (confirm("Tell the instance to grab the selected release?")) runSelection(true);
+    if (confirm("Tell the instance to grab the selected release?")) runCurrentSelection(true);
   });
   $("#load-wanted").addEventListener("click", loadWanted);
+
+  /* seasons / whole series */
+  $("#select-what").addEventListener("change", updateSelectMode);
+  $("#select-instance").addEventListener("change", updateSelectMode);
+  $("#load-seasons").addEventListener("click", loadSeasons);
+  updateSelectMode();
 
   $("#save-nl").addEventListener("click", () =>
     saveConfigPatch({ nl_preferences: $("#nl-preferences").value }, "#nl-status")
@@ -1293,12 +1607,14 @@ function wire() {
       {
         llm: readForm($("#llm-form"), llmSchema),
         automatic: readForm($("#automatic-form"), automaticSchema),
+        seasons: seasonsFromForm(),
       },
       "#llm-status"
     ).then((ok) => {
       if (ok) {
         buildForm($("#llm-form"), llmSchema, state.config.llm);
         buildForm($("#automatic-form"), automaticSchema, state.config.automatic);
+        buildForm($("#seasons-form"), seasonsSchema, seasonsToForm(state.config.seasons));
         loadAutomatic();
       }
     })

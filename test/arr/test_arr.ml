@@ -232,6 +232,111 @@ let test_history_decoding () =
 (* Grab bodies                                                         *)
 (* ------------------------------------------------------------------ *)
 
+(* ------------------------------------------------------------------ *)
+(* Seasons and whole series                                            *)
+(* ------------------------------------------------------------------ *)
+
+let season_fixture () =
+  let episodes =
+    load "sonarr_season_episodes.json" |> list_of
+    |> List.map A.Sonarr.episode_resource_of_yojson
+  in
+  let series =
+    match
+      (A.Sonarr.episode_resource_of_yojson (load "sonarr_episode.json")).A.Sonarr.er_series
+    with
+    | Some s -> s
+    | None -> Alcotest.fail "fixture should embed the series"
+  in
+  (episodes, series)
+
+let test_season_summaries () =
+  let episodes, _series = season_fixture () in
+  match A.Client.summarise_seasons episodes with
+  | [ s1; s2 ] ->
+      (* Specials (season 0) are dropped because regular seasons exist. *)
+      Alcotest.(check int) "first season number" 1 s1.A.Client.season_number;
+      Alcotest.(check int) "season 1 episodes" 3 s1.A.Client.total_episodes;
+      Alcotest.(check (list int))
+        "season 1 misses only the monitored, file-less episode" [ 102 ]
+        s1.A.Client.missing_episode_ids;
+      opt_string "season 1 existing quality" (Some "WEBDL-1080p")
+        s1.A.Client.existing_quality;
+      bool_ "season 1 monitored" true s1.A.Client.monitored;
+      Alcotest.(check int) "second season number" 2 s2.A.Client.season_number;
+      Alcotest.(check int) "season 2 episodes" 2 s2.A.Client.total_episodes;
+      Alcotest.(check (list int))
+        "season 2 is entirely missing" [ 201; 202 ]
+        s2.A.Client.missing_episode_ids;
+      opt_string "season 2 has nothing on disk" None s2.A.Client.existing_quality
+  | other ->
+      Alcotest.failf "expected the two regular seasons, got %d" (List.length other)
+
+let test_season_summaries_specials_only () =
+  let episodes, _series = season_fixture () in
+  let specials =
+    List.filter
+      (fun (e : A.Sonarr.episode_resource) -> e.A.Sonarr.er_season_number = 0)
+      episodes
+  in
+  match A.Client.summarise_seasons specials with
+  | [ s ] -> Alcotest.(check int) "specials are kept when alone" 0 s.A.Client.season_number
+  | other -> Alcotest.failf "expected one season, got %d" (List.length other)
+
+let extra_int (m : T.media) key =
+  match List.assoc_opt key m.T.extra with Some (`Int i) -> Some i | _ -> None
+
+let extra_ints (m : T.media) key =
+  match List.assoc_opt key m.T.extra with
+  | Some (`List l) -> List.filter_map (function `Int i -> Some i | _ -> None) l
+  | _ -> []
+
+let test_media_of_season () =
+  let episodes, series = season_fixture () in
+  let season_2 =
+    List.filter
+      (fun (e : A.Sonarr.episode_resource) -> e.A.Sonarr.er_season_number = 2)
+      episodes
+  in
+  let m = A.Mapping.media_of_season ~season_number:2 season_2 series in
+  Alcotest.(check string) "kind" "season" m.T.media_kind;
+  Alcotest.(check int) "media id is the series id" 12 m.T.media_id;
+  Alcotest.(check string) "title is the series title" "Some Show" m.T.title;
+  opt_int "season" (Some 2) m.T.season_number;
+  opt_int "no episode number" None m.T.episode_number;
+  opt_string "series type" (Some "anime") m.T.series_type;
+  bool_ "nothing on disk yet" false m.T.has_file;
+  bool_ "monitored" true m.T.monitored;
+  opt_int "series_id extra" (Some 12) (extra_int m "series_id");
+  opt_int "total episodes" (Some 2) (extra_int m "total_episodes");
+  opt_int "missing episodes" (Some 2) (extra_int m "missing_episodes");
+  Alcotest.(check (list int))
+    "missing episode ids" [ 201; 202 ]
+    (extra_ints m "missing_episode_ids");
+  (* A fully downloaded season reports has_file. *)
+  let season_1 =
+    List.filter
+      (fun (e : A.Sonarr.episode_resource) ->
+        e.A.Sonarr.er_season_number = 1 && e.A.Sonarr.er_has_file)
+      episodes
+  in
+  let complete = A.Mapping.media_of_season ~season_number:1 season_1 series in
+  bool_ "complete season has a file" true complete.T.has_file;
+  opt_string "existing quality" (Some "WEBDL-1080p") complete.T.existing_quality
+
+let test_media_of_series () =
+  let episodes, series = season_fixture () in
+  let m = A.Mapping.media_of_series episodes series in
+  Alcotest.(check string) "kind" "series" m.T.media_kind;
+  Alcotest.(check int) "media id is the series id" 12 m.T.media_id;
+  opt_int "no season number" None m.T.season_number;
+  opt_int "total episodes" (Some 6) (extra_int m "total_episodes");
+  (* Specials count as missing here: the series view is the raw total. *)
+  opt_int "missing episodes" (Some 4) (extra_int m "missing_episodes");
+  Alcotest.(check (list int))
+    "missing episode ids" [ 1; 102; 201; 202 ]
+    (extra_ints m "missing_episode_ids")
+
 let media_stub app kind id =
   {
     T.app;
@@ -263,10 +368,16 @@ let test_grab_bodies () =
   Alcotest.(check string)
     "sonarr body" {|{"guid":"g-1","indexerId":4,"episodeId":5150}|}
     (Yojson.Safe.to_string body);
+  (* A season/series media is addressed by its series id, so the hint goes
+     under "seriesId" and never "episodeId". *)
   let season = media_stub T.Sonarr "season" 12 in
   Alcotest.(check string)
-    "sonarr season body omits episodeId" {|{"guid":"g-1","indexerId":4}|}
+    "sonarr season body sends seriesId" {|{"guid":"g-1","indexerId":4,"seriesId":12}|}
     (Yojson.Safe.to_string (A.Mapping.sonarr_grab_body ~guid:"g-1" ~indexer_id:4 ~media:season));
+  let series = media_stub T.Sonarr "series" 12 in
+  Alcotest.(check string)
+    "sonarr series body sends seriesId" {|{"guid":"g-1","indexerId":4,"seriesId":12}|}
+    (Yojson.Safe.to_string (A.Mapping.sonarr_grab_body ~guid:"g-1" ~indexer_id:4 ~media:series));
   let movie = media_stub T.Radarr "movie" 77 in
   Alcotest.(check string)
     "radarr body" {|{"guid":"g-2","indexerId":2,"movieId":77}|}
@@ -579,6 +690,10 @@ let tests =
     ("radarr release mapping", `Quick, test_radarr_release_mapping);
     ("media of episode", `Quick, test_media_of_episode);
     ("media of movie", `Quick, test_media_of_movie);
+    ("season summaries", `Quick, test_season_summaries);
+    ("season summaries with specials only", `Quick, test_season_summaries_specials_only);
+    ("media of season", `Quick, test_media_of_season);
+    ("media of series", `Quick, test_media_of_series);
     ("wanted paging", `Quick, test_wanted_paging);
     ("queue decoding", `Quick, test_queue_decoding);
     ("history decoding", `Quick, test_history_decoding);

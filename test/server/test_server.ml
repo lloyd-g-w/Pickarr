@@ -379,6 +379,82 @@ let test_plan_zero_limit () =
   Alcotest.(check int) "nothing chosen" 0 (List.length chosen);
   Alcotest.(check int) "everything skipped" 2 (List.length skipped)
 
+(* ------------------------------------------------------------------ *)
+(* Season packs: the policy decision and the automatic grouping         *)
+(* ------------------------------------------------------------------ *)
+
+let episode_media ~series_id ~season ~id =
+  {
+    media with
+    app = Types.Sonarr;
+    media_id = id;
+    media_kind = "episode";
+    season_number = Some season;
+    extra = [ ("series_id", `Int series_id) ];
+  }
+
+let plan_t =
+  Alcotest.testable
+    (fun fmt p -> Format.pp_print_string fmt (Selection.season_plan_to_string p))
+    ( = )
+
+let test_season_plan () =
+  let policy = Config.default_seasons in
+  Alcotest.check plan_t "nothing missing is skipped"
+    (Selection.Plan_skip "nothing missing")
+    (Selection.season_plan policy ~missing:0 ~total:10);
+  Alcotest.check plan_t "an empty season is skipped"
+    (Selection.Plan_skip "the season has no episodes")
+    (Selection.season_plan policy ~missing:0 ~total:0);
+  (* default min_missing_fraction is 0.5 *)
+  Alcotest.check plan_t "a fully missing season takes the pack" Selection.Plan_pack
+    (Selection.season_plan policy ~missing:10 ~total:10);
+  Alcotest.check plan_t "exactly at the threshold takes the pack" Selection.Plan_pack
+    (Selection.season_plan policy ~missing:5 ~total:10);
+  Alcotest.check plan_t "one missing episode of ten goes per episode"
+    Selection.Plan_episodes
+    (Selection.season_plan policy ~missing:1 ~total:10);
+  Alcotest.check plan_t "packs disabled always goes per episode" Selection.Plan_episodes
+    (Selection.season_plan { policy with prefer_packs = false } ~missing:10 ~total:10);
+  Alcotest.check plan_t "a lower threshold allows a pack" Selection.Plan_pack
+    (Selection.season_plan { policy with min_missing_fraction = 0.1 } ~missing:1 ~total:10)
+
+let test_seasons_of_json () =
+  let parse s = Selection.seasons_of_json (Yojson.Safe.from_string s) in
+  Alcotest.(check (result (list int) string)) "list" (Ok [ 1; 2 ]) (parse {|{"seasons":[1,2]}|});
+  Alcotest.(check (result (list int) string))
+    "strings are accepted" (Ok [ 3 ]) (parse {|{"seasons":["3"]}|});
+  Alcotest.(check (result (list int) string)) "a bare number" (Ok [ 4 ]) (parse {|{"seasons":4}|});
+  Alcotest.(check (result (list int) string)) "absent" (Ok []) (parse {|{"grab":true}|});
+  Alcotest.(check (result (list int) string)) "null" (Ok []) (parse {|{"seasons":null}|});
+  Alcotest.(check bool) "a negative season is rejected" true
+    (Result.is_error (parse {|{"seasons":[-1]}|}));
+  Alcotest.(check bool) "junk is rejected" true
+    (Result.is_error (parse {|{"seasons":["x"]}|}))
+
+let test_group_by_season () =
+  let items =
+    [
+      episode_media ~series_id:12 ~season:2 ~id:201;
+      episode_media ~series_id:7 ~season:1 ~id:71;
+      episode_media ~series_id:12 ~season:2 ~id:202;
+      episode_media ~series_id:12 ~season:3 ~id:301;
+      media_with 42 (* a Radarr movie: never grouped *);
+      { (episode_media ~series_id:12 ~season:2 ~id:203) with extra = [] };
+    ]
+  in
+  let groups, ungrouped = Automatic.group_by_season items in
+  Alcotest.(check (list (pair (pair int int) (list int))))
+    "groups keep first-seen order and their episode ids"
+    [ ((12, 2), [ 201; 202 ]); ((7, 1), [ 71 ]); ((12, 3), [ 301 ]) ]
+    (List.map
+       (fun (key, items) ->
+         (key, List.map (fun (m : Types.media) -> m.media_id) items))
+       groups);
+  Alcotest.(check (list int))
+    "a movie and an episode without a series id stay single" [ 42; 203 ]
+    (List.map (fun (m : Types.media) -> m.media_id) ungrouped)
+
 let automatic_cfg ?(grab = true) ?(min_confidence = 0.7) () =
   { Config.default_automatic with auto_grab = grab; auto_min_confidence = min_confidence }
 
@@ -891,6 +967,12 @@ let () =
           Alcotest.test_case "cooldown seconds" `Quick test_cooldown_seconds;
           Alcotest.test_case "webhook action" `Quick test_webhook_action;
           Alcotest.test_case "seerr action" `Quick test_seerr_action;
+          Alcotest.test_case "group by season" `Quick test_group_by_season;
+        ] );
+      ( "seasons",
+        [
+          Alcotest.test_case "season plan" `Quick test_season_plan;
+          Alcotest.test_case "seasons request field" `Quick test_seasons_of_json;
         ] );
       ( "seerr sync",
         [

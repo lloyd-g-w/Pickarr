@@ -20,12 +20,51 @@ val fetch_media : t -> int -> (Pickarr_core.Types.media, error) result Lwt.t
     a failure to fetch them leaves the corresponding fields empty rather than
     failing the call. *)
 
+(** One season of a Sonarr series, as seen from the library. *)
+type season_summary = {
+  season_number : int;
+  monitored : bool;  (** Any monitored episode in the season. *)
+  total_episodes : int;
+  missing_episode_ids : int list;  (** Monitored episodes without a file. *)
+  existing_quality : string option;  (** Quality of the first file on disk. *)
+}
+
+val season_summary_to_yojson : season_summary -> Yojson.Safe.t
+
+val summarise_seasons : Sonarr.episode_resource list -> season_summary list
+(** Aggregate an episode list (as returned by
+    [GET /api/v3/episode?seriesId=]) into one entry per season, ordered by
+    season number.  Specials (season 0) are dropped unless they are all there
+    is.  Exposed because it is the pure part of
+    {!fetch_series_overview}. *)
+
+val fetch_series_overview :
+  t ->
+  int ->
+  (Pickarr_core.Types.media * season_summary list, error) result Lwt.t
+(** [fetch_series_overview client series_id] describes a series and its
+    seasons ([GET /api/v3/series/{id}] plus [GET /api/v3/episode?seriesId=]).
+    The media has [media_kind = "series"] and [media_id = series_id].
+    Specials (season 0) are omitted unless the series has no other season.
+    Sonarr only: a Radarr instance answers [Error]. *)
+
+val season_media :
+  t -> series_id:int -> season_number:int -> (Pickarr_core.Types.media, error) result Lwt.t
+(** The media describing one season ([media_kind = "season"],
+    [media_id = series_id], [season_number = Some n]).  [extra] carries
+    [series_id], [total_episodes], [missing_episodes] and
+    [missing_episode_ids].  Sonarr only. *)
+
 val search_releases :
   t -> Pickarr_core.Types.media -> (Pickarr_core.Types.release list, error) result Lwt.t
 (** Interactive search: [GET /api/v3/release?episodeId=] (Sonarr),
     [?seriesId=&seasonNumber=] when [media.media_kind = "season"], or
     [?movieId=] (Radarr).  Nothing is filtered out: releases Sonarr/Radarr
     rejected come back with [arr_rejected = true] and their reasons.
+
+    A ["series"] media is rejected with an [Error]: Sonarr has no
+    series-wide release search, so a whole series is selected season by
+    season (see {!fetch_series_overview}).
 
     Note that this call runs a live indexer search and typically takes
     several seconds; it also primes the 30-minute release cache that
@@ -38,6 +77,9 @@ val grab :
   (unit, error) result Lwt.t
 (** [POST /api/v3/release] with the release's [guid] and [indexerId], letting
     Sonarr/Radarr fetch the torrent/NZB and hand it to the download client.
+    An ["episode"] media also sends [episodeId], a ["season"] media sends
+    [seriesId], a Radarr movie sends [movieId].
+
     The release must have been returned by a {!search_releases} call made
     within the last 30 minutes, otherwise Sonarr/Radarr answer 404
     ("Couldn't find requested release in cache"). *)

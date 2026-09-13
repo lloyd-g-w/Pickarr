@@ -1,0 +1,79 @@
+[
+  {
+    "id": 1,
+    "seriesId": 12,
+    "seasonNumber": 0,
+    "episodeNumber": 1,
+    "title": "Behind the scenes",
+    "airDateUtc": "2019-12-24T01:00:00Z",
+    "runtime": 22,
+    "hasFile": false,
+    "monitored": true
+  },
+  {
+    "id": 101,
+    "seriesId": 12,
+    "seasonNumber": 1,
+    "episodeNumber": 1,
+    "title": "Pilot",
+    "airDateUtc": "2020-01-07T01:00:00Z",
+    "runtime": 45,
+    "hasFile": true,
+    "monitored": true,
+    "episodeFile": {
+      "id": 801,
+      "seriesId": 12,
+      "seasonNumber": 1,
+      "relativePath": "Season 01/s01e01.mkv",
+      "size": 2000000000,
+      "quality": {
+        "quality": { "id": 3, "name": "WEBDL-1080p", "source": "web", "resolution": 1080 },
+        "revision": { "version": 1, "real": 0, "isRepack": false }
+      }
+    }
+  },
+  {
+    "id": 102,
+    "seriesId": 12,
+    "seasonNumber": 1,
+    "episodeNumber": 2,
+    "title": "The second one",
+    "airDateUtc": "2020-01-14T01:00:00Z",
+    "runtime": 45,
+    "hasFile": false,
+    "monitored": true
+  },
+  {
+    "id": 103,
+    "seriesId": 12,
+    "seasonNumber": 1,
+    "episodeNumber": 3,
+    "title": "Unmonitored",
+    "airDateUtc": "2020-01-21T01:00:00Z",
+    "runtime": 45,
+    "hasFile": false,
+    "monitored": false
+  },
+  {
+    "id": 201,
+    "seriesId": 12,
+    "seasonNumber": 2,
+    "episodeNumber": 1,
+    "title": "Back again",
+    "airDateUtc": "2021-02-02T01:00:00Z",
+    "runtime": 45,
+    "hasFile": false,
+    "monitored": true
+  },
+  {
+    "id": 202,
+    "seriesId": 12,
+    "seasonNumber": 2,
+    "episodeNumber": 2,
+    "title": "And again",
+    "airDateUtc": "2021-02-09T01:00:00Z",
+    "runtime": 45,
+    "hasFile": false,
+    "monitored": true
+  }
+]

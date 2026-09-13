@@ -379,3 +379,40 @@ let partition (h : Config.hard_rules) (releases : Types.release list) :
             go acc_ok ({ Types.release = r; reasons } :: acc_bad) tl)
   in
   go [] [] releases
+
+(* ------------------------------------------------------------------------ *)
+(* Season packs                                                              *)
+(* ------------------------------------------------------------------------ *)
+
+(* A season search ([GET /api/v3/release?seriesId=&seasonNumber=]) also
+   returns single episodes of that season, so a season selection has to drop
+   everything that is not a pack for the season being filled. *)
+let season_pack_reasons (wanted_season : int option) (r : Types.release) :
+    Types.rejection list =
+  if not r.Types.full_season then
+    [
+      hard "not_season_pack"
+        "Not a season pack: this release covers single episodes";
+    ]
+  else
+    match (wanted_season, r.Types.season_number) with
+    | Some wanted, Some got when wanted <> got ->
+        [
+          hard "not_season_pack"
+            (Printf.sprintf "Season pack for season %d, not season %d" got wanted);
+        ]
+    | _ -> []
+
+let season_pack_partition (media : Types.media) (releases : Types.release list) :
+    Types.release list * Types.rejected_release list =
+  match media.Types.media_kind with
+  | "season" ->
+      let rec go acc_ok acc_bad = function
+        | [] -> (List.rev acc_ok, List.rev acc_bad)
+        | r :: tl -> (
+            match season_pack_reasons media.Types.season_number r with
+            | [] -> go (r :: acc_ok) acc_bad tl
+            | reasons -> go acc_ok ({ Types.release = r; reasons } :: acc_bad) tl)
+      in
+      go [] [] releases
+  | _ -> (releases, [])

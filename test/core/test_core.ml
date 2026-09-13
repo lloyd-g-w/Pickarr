@@ -365,6 +365,97 @@ let test_filter_partition () =
     (List.map (fun r -> r.Types.release.Types.id) rejected)
 
 (* ------------------------------------------------------------------------ *)
+(* Season packs                                                              *)
+(* ------------------------------------------------------------------------ *)
+
+(* A Sonarr season: media_id is the series id, season_number says which
+   season is being filled. *)
+let season_media ?(season_number = Some 2) () : Types.media =
+  {
+    movie with
+    Types.app = Types.Sonarr;
+    media_id = 12;
+    title = "Some Show";
+    media_kind = "season";
+    season_number;
+    series_type = Some "standard";
+    extra = [ ("series_id", `Int 12) ];
+  }
+
+let mk_pack ?id ?(season = Some 2) () =
+  let r = mk_release ?id () in
+  { r with Types.full_season = true; season_number = season }
+
+let test_season_pack_partition () =
+  let pack = mk_pack ~id:"pack" () in
+  let single = mk_release ~id:"single" () in
+  let other_season = mk_pack ~id:"s3" ~season:(Some 3) () in
+  let unknown_season = mk_pack ~id:"unknown" ~season:None () in
+  let ok, rejected =
+    Filter.season_pack_partition (season_media ())
+      [ pack; single; other_season; unknown_season ]
+  in
+  Alcotest.(check (list string))
+    "only packs for this season survive" [ "pack"; "unknown" ]
+    (List.map (fun r -> r.Types.id) ok);
+  Alcotest.(check (list string))
+    "rejected ids" [ "single"; "s3" ]
+    (List.map (fun r -> r.Types.release.Types.id) rejected);
+  Alcotest.(check (list string))
+    "rule is not_season_pack"
+    [ "not_season_pack"; "not_season_pack" ]
+    (List.concat_map
+       (fun (r : Types.rejected_release) ->
+         List.map (fun (x : Types.rejection) -> x.Types.rule) r.Types.reasons)
+       rejected);
+  Alcotest.(check bool)
+    "stage is a hard rule" true
+    (List.for_all
+       (fun (r : Types.rejected_release) ->
+         List.for_all
+           (fun (x : Types.rejection) -> x.Types.stage = Types.Hard_rule)
+           r.Types.reasons)
+       rejected)
+
+let test_season_pack_partition_other_kinds () =
+  let releases = [ mk_release ~id:"a" (); mk_pack ~id:"b" () ] in
+  let passthrough media =
+    let ok, rejected = Filter.season_pack_partition media releases in
+    Alcotest.(check int)
+      (Printf.sprintf "%s keeps every release" media.Types.media_kind)
+      2 (List.length ok);
+    Alcotest.(check int) "nothing rejected" 0 (List.length rejected)
+  in
+  passthrough movie;
+  passthrough { movie with Types.media_kind = "episode" };
+  passthrough { movie with Types.media_kind = "series" }
+
+let test_pipeline_season_rejects_singles () =
+  let config = config_with () in
+  let pack = mk_pack ~id:"pack" () in
+  let single = mk_release ~id:"single" () in
+  let result =
+    Lwt_main.run
+      (Pipeline.run ~config ~instance:None ~media:(season_media ())
+         ~releases:[ single; pack ] ())
+  in
+  Alcotest.(check string)
+    "the pack is selected" "pack"
+    (match result.Types.selected with
+    | Some s -> s.Types.scored.Types.id
+    | None -> "<none>");
+  Alcotest.(check (list string))
+    "the single episode is reported as rejected" [ "single" ]
+    (List.map (fun (r : Types.rejected_release) -> r.Types.release.Types.id)
+       result.Types.rejected);
+  Alcotest.(check (list string))
+    "with the pack rule" [ "not_season_pack" ]
+    (List.concat_map
+       (fun (r : Types.rejected_release) ->
+         List.map (fun (x : Types.rejection) -> x.Types.rule) r.Types.reasons)
+       result.Types.rejected)
+
+(* ------------------------------------------------------------------------ *)
 (* Scoring                                                                   *)
 (* ------------------------------------------------------------------------ *)
 
@@ -1234,6 +1325,12 @@ let () =
           Alcotest.test_case "all reasons reported" `Quick
             test_filter_multiple_reasons;
           Alcotest.test_case "partition" `Quick test_filter_partition;
+          Alcotest.test_case "season pack partition" `Quick
+            test_season_pack_partition;
+          Alcotest.test_case "season pack partition ignores other kinds" `Quick
+            test_season_pack_partition_other_kinds;
+          Alcotest.test_case "season selection rejects single episodes" `Quick
+            test_pipeline_season_rejects_singles;
         ] );
       ( "scoring",
         [

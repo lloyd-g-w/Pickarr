@@ -54,3 +54,17 @@ val partition :
   Config.hard_rules ->
   Types.release list ->
   Types.release list * Types.rejected_release list
+
+(** [season_pack_partition media releases] keeps only releases that can fill
+    a whole season when [media.media_kind = "season"]: a release that is not
+    a full-season pack, or is a pack for a different season, is rejected with
+    the rule ["not_season_pack"] (stage {!Types.Hard_rule}).  Sonarr's season
+    search returns single episodes of the season as well, which is why this
+    is needed.  For every other media kind both lists pass through unchanged.
+
+    Applied before {!partition} so that the user still sees why a release was
+    dropped. *)
+val season_pack_partition :
+  Types.media ->
+  Types.release list ->
+  Types.release list * Types.rejected_release list

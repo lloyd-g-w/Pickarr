@@ -213,6 +213,25 @@ let tag_labels (tags : R.tag list) (ids : int list) =
 let some_string k = function Some v -> [ (k, `String v) ] | None -> []
 let some_int k = function Some v -> [ (k, `Int v) ] | None -> []
 
+(* Fields every Sonarr media kind copies from its series. *)
+let series_extra (series : Sonarr.series_resource) =
+  [ ("series_id", `Int series.Sonarr.sr_id) ]
+  @ some_int "tvdb_id" series.Sonarr.sr_tvdb_id
+  @ some_string "imdb_id" series.Sonarr.sr_imdb_id
+  @ some_string "network" series.Sonarr.sr_network
+  @ some_string "certification" series.Sonarr.sr_certification
+  @ some_string "series_status" series.Sonarr.sr_status
+
+(* An episode counts as missing when it is monitored and has no file; only
+   monitored episodes are Pickarr's business. *)
+let is_missing (ep : Sonarr.episode_resource) =
+  ep.Sonarr.er_monitored && not ep.Sonarr.er_has_file
+
+let first_existing_quality (episodes : Sonarr.episode_resource list) =
+  List.fold_left
+    (fun acc (ep : Sonarr.episode_resource) -> or_else acc ep.Sonarr.er_episode_file_quality)
+    None episodes
+
 (** Build {!Pickarr_core.Types.media} for a Sonarr episode.  [series] is
     required for genres/series type; [tags] and [profile_name] are
     best-effort and may be [[]] / [None]. *)
@@ -239,15 +258,65 @@ let media_of_episode ?(tags = []) ?profile_name (ep : Sonarr.episode_resource)
     existing_quality = ep.Sonarr.er_episode_file_quality;
     monitored = ep.Sonarr.er_monitored;
     path = series.Sonarr.sr_path;
-    extra =
-      [ ("series_id", `Int series.Sonarr.sr_id) ]
-      @ some_int "tvdb_id" series.Sonarr.sr_tvdb_id
-      @ some_string "imdb_id" series.Sonarr.sr_imdb_id
-      @ some_string "network" series.Sonarr.sr_network
-      @ some_string "certification" series.Sonarr.sr_certification
-      @ some_string "series_status" series.Sonarr.sr_status
-      @ some_string "air_date_utc" ep.Sonarr.er_air_date_utc;
+    extra = series_extra series @ some_string "air_date_utc" ep.Sonarr.er_air_date_utc;
   }
+
+let media_of_sonarr_group ~(kind : string) ~(season_number : int option)
+    ?(tags = []) ?profile_name (episodes : Sonarr.episode_resource list)
+    (series : Sonarr.series_resource) : T.media =
+  let missing = List.filter is_missing episodes in
+  let total = List.length episodes in
+  {
+    T.app = T.Sonarr;
+    (* Both a season and a whole series are addressed by their series id:
+       the season number (when any) says which part of it is meant. *)
+    media_id = series.Sonarr.sr_id;
+    title = series.Sonarr.sr_title;
+    year = series.Sonarr.sr_year;
+    media_kind = kind;
+    series_type = series.Sonarr.sr_series_type;
+    season_number;
+    episode_number = None;
+    episode_title = None;
+    genres = series.Sonarr.sr_genres;
+    runtime_minutes = series.Sonarr.sr_runtime;
+    quality_profile_id = series.Sonarr.sr_quality_profile_id;
+    quality_profile_name = or_else profile_name series.Sonarr.sr_profile_name;
+    tags = tag_labels tags series.Sonarr.sr_tags;
+    overview = series.Sonarr.sr_overview;
+    original_language = series.Sonarr.sr_original_language;
+    has_file = total > 0 && missing = [];
+    existing_quality = first_existing_quality episodes;
+    monitored =
+      series.Sonarr.sr_monitored
+      && (episodes = [] || List.exists (fun (e : Sonarr.episode_resource) -> e.Sonarr.er_monitored) episodes);
+    path = series.Sonarr.sr_path;
+    extra =
+      series_extra series
+      @ [
+          ("total_episodes", `Int total);
+          ("missing_episodes", `Int (List.length missing));
+          ( "missing_episode_ids",
+            `List (List.map (fun (e : Sonarr.episode_resource) -> `Int e.Sonarr.er_id) missing) );
+        ];
+  }
+
+(** Build {!Pickarr_core.Types.media} for one Sonarr season
+    ([media_kind = "season"], [media_id] = the series id).  [episodes] must
+    be the episodes of that season. *)
+let media_of_season ?tags ?profile_name ~(season_number : int)
+    (episodes : Sonarr.episode_resource list) (series : Sonarr.series_resource) : T.media =
+  media_of_sonarr_group ~kind:"season" ~season_number:(Some season_number) ?tags
+    ?profile_name episodes series
+
+(** Build {!Pickarr_core.Types.media} for a whole Sonarr series
+    ([media_kind = "series"]).  [episodes] must be every episode of the
+    series.  A series is never searched directly (Sonarr has no series-wide
+    release search); it is the label and context for per-season work. *)
+let media_of_series ?tags ?profile_name (episodes : Sonarr.episode_resource list)
+    (series : Sonarr.series_resource) : T.media =
+  media_of_sonarr_group ~kind:"series" ~season_number:None ?tags ?profile_name episodes
+    series
 
 (** Build {!Pickarr_core.Types.media} for a Radarr movie. *)
 let media_of_movie ?(tags = []) ?profile_name (m : Radarr.movie_resource) : T.media =
@@ -310,12 +379,21 @@ let grab_identity (r : T.release) : (string * int, grab_error) result =
   | _, Some i when i <= 0 -> Error Missing_indexer
   | Some g, Some i -> Ok (g, i)
 
-(** [POST /api/v3/release] body for Sonarr. *)
+(** [POST /api/v3/release] body for Sonarr.
+
+    For an episode selection [media_id] is the episode id; for a season or a
+    whole-series selection it is the series id, so the hint has to be sent
+    under the matching key ([docs/API_RESEARCH.md] §3.2: [seriesId],
+    [episodeId] and [episodeIds] are all optional inputs).  Sonarr maps a
+    pack to its episodes from the cached decision either way. *)
 let sonarr_grab_body ~guid ~indexer_id ~(media : T.media) : Yojson.Safe.t =
-  let episode_ids =
-    match media.T.media_kind with "episode" -> [ ("episodeId", `Int media.T.media_id) ] | _ -> []
+  let media_hint =
+    match media.T.media_kind with
+    | "episode" -> [ ("episodeId", `Int media.T.media_id) ]
+    | "season" | "series" -> [ ("seriesId", `Int media.T.media_id) ]
+    | _ -> []
   in
-  `Assoc ([ ("guid", `String guid); ("indexerId", `Int indexer_id) ] @ episode_ids)
+  `Assoc ([ ("guid", `String guid); ("indexerId", `Int indexer_id) ] @ media_hint)
 
 (** [POST /api/v3/release] body for Radarr. *)
 let radarr_grab_body ~guid ~indexer_id ~(media : T.media) : Yojson.Safe.t =

@@ -649,8 +649,6 @@ let library ?(max_age = library_max_age) ?(now = Unix.gettimeofday) t =
           t.library <- Some (now (), items);
           ok items)
 
-let forget_library t = t.library <- None
-
 (** One episode row of a season, for the library browser. *)
 type episode_summary = {
   ep_id : int;

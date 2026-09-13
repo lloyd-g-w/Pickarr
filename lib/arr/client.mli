@@ -179,10 +179,6 @@ val library :
     search box does not re-list the library on every keystroke.  [now] is
     injectable for tests. *)
 
-val forget_library : t -> unit
-(** Drop the cached library, so the next {!library} call re-fetches.  Used
-    after Pickarr grabs something, and by the UI's explicit refresh. *)
-
 (** One episode of a season, for the library browser. *)
 type episode_summary = {
   ep_id : int;

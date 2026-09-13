@@ -90,6 +90,21 @@ let decode_body url code body =
   if code < 200 || code >= 300 then parse_error_body code body
   else Json (Printf.sprintf "unexpected body from %s: %s" url (truncate 300 body))
 
+(* Cohttp's default resolver maps the URI scheme to a port with
+   getservbyname(3), i.e. /etc/services, which minimal container images do
+   not ship; the symptom is "resolution failed: unknown scheme" for every
+   request. Use the built-in port table first and only then the system one. *)
+let resolver =
+  let service name =
+    let open Lwt.Infix in
+    Resolver_lwt_unix.static_service name >>= function
+    | Some s -> Lwt.return (Some s)
+    | None -> Resolver_lwt_unix.system_service name
+  in
+  Resolver_lwt.init ~service ~rewrites:[ ("", Resolver_lwt_unix.system_resolver) ] ()
+
+let ctx = lazy (Cohttp_lwt_unix.Net.init ~resolver ())
+
 let request ~meth ~url ~api_key ?body () : (Yojson.Safe.t, error) result Lwt.t =
   let uri = Uri.of_string url in
   with_timeout url (fun () ->
@@ -97,7 +112,7 @@ let request ~meth ~url ~api_key ?body () : (Yojson.Safe.t, error) result Lwt.t =
         (fun () ->
           let open Lwt.Infix in
           let body = Option.map (fun j -> Cohttp_lwt.Body.of_string (Yojson.Safe.to_string j)) body in
-          Cohttp_lwt_unix.Client.call ~headers:(headers api_key) ?body meth uri
+          Cohttp_lwt_unix.Client.call ~ctx:(Lazy.force ctx) ~headers:(headers api_key) ?body meth uri
           >>= fun (resp, resp_body) ->
           Cohttp_lwt.Body.to_string resp_body >>= fun text ->
           let code = Cohttp.Code.code_of_status (Cohttp.Response.status resp) in

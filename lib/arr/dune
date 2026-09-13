@@ -2,4 +2,4 @@
  (name pickarr_arr)
  (public_name pickarr.arr)
  (libraries pickarr_core yojson lwt lwt.unix unix cohttp cohttp-lwt
-   cohttp-lwt-unix uri logs logs.lwt))
+   cohttp-lwt-unix conduit-lwt conduit-lwt-unix uri logs logs.lwt))

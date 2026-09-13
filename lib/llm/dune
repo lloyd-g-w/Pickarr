@@ -1,4 +1,4 @@
 (library
  (name pickarr_llm)
  (public_name pickarr.llm)
- (libraries pickarr_core yojson lwt lwt.unix cohttp cohttp-lwt cohttp-lwt-unix uri logs logs.lwt))
+ (libraries pickarr_core yojson lwt lwt.unix cohttp cohttp-lwt cohttp-lwt-unix conduit-lwt conduit-lwt-unix uri logs logs.lwt))

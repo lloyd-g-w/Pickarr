@@ -36,7 +36,7 @@ LABEL org.opencontainers.image.title="Pickarr" \
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      libev4 libssl3 libgmp10 ca-certificates curl tzdata gosu \
+      libev4 libssl3 libgmp10 ca-certificates curl tzdata gosu netbase \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --uid 1000 --create-home --shell /usr/sbin/nologin pickarr \
  && mkdir -p /data /app \

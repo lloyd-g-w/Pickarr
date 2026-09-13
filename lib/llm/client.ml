@@ -211,6 +211,21 @@ let headers (cfg : C.llm) =
   Cohttp.Header.of_list base
 
 (* Perform the POST, returning the raw body text on success. *)
+(* Cohttp's default resolver maps the URI scheme to a port with
+   getservbyname(3), i.e. /etc/services, which minimal container images do
+   not ship; the symptom is "resolution failed: unknown scheme" for every
+   request. Use the built-in port table first and only then the system one. *)
+let resolver =
+  let service name =
+    let open Lwt.Infix in
+    Resolver_lwt_unix.static_service name >>= function
+    | Some s -> Lwt.return (Some s)
+    | None -> Resolver_lwt_unix.system_service name
+  in
+  Resolver_lwt.init ~service ~rewrites:[ ("", Resolver_lwt_unix.system_resolver) ] ()
+
+let ctx = lazy (Cohttp_lwt_unix.Net.init ~resolver ())
+
 let post_raw (cfg : C.llm) (body : Yojson.Safe.t) : (string, error) result Lwt.t =
   let url = chat_completions_url cfg.C.llm_base_url in
   let uri = Uri.of_string url in
@@ -220,7 +235,7 @@ let post_raw (cfg : C.llm) (body : Yojson.Safe.t) : (string, error) result Lwt.t
     Lwt.catch
       (fun () ->
         let open Lwt.Infix in
-        Cohttp_lwt_unix.Client.post ~headers:(headers cfg) ~body:payload uri
+        Cohttp_lwt_unix.Client.post ~ctx:(Lazy.force ctx) ~headers:(headers cfg) ~body:payload uri
         >>= fun (resp, resp_body) ->
         Cohttp_lwt.Body.to_string resp_body >>= fun text ->
         let code = Cohttp.Code.code_of_status (Cohttp.Response.status resp) in
@@ -269,6 +284,7 @@ let complete_with_json_mode_fallback (cfg : C.llm) ~system ~user =
     complete cfg ~system ~user ~json_mode:true >>= function
     | Error (Http_status (400, _)) -> complete cfg ~system ~user ~json_mode:false
     | other -> Lwt.return other
+
 
 let chat_json (cfg : C.llm) ~system ~user =
   let open Lwt.Infix in

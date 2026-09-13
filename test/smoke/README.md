@@ -2,7 +2,7 @@
 
 Not part of `dune test`: these drive the **real** binary against fake Sonarr,
 Radarr, Seerr and LLM servers, and check the browser UI with a DOM stub. They
-need `python3` and `node`, and they bind ports 19100-19449 on loopback.
+need `python3` and `node`, and they bind ports 19100-19452 on loopback.
 
 Build first, from the repository root, and run them from anywhere — each
 script resolves the repository from its own location:
@@ -52,6 +52,21 @@ fallback, and the error responses of the season routes) against
 `fake_sonarr_seasons.py`, whose series 12 has season 1 missing 1 of 4 and
 season 2 missing 2 of 2. Read the output; it exits non-zero only if a step
 crashes.
+
+## Library browsing and open-in links
+
+```bash
+bash test/smoke/library_e2e.sh
+```
+
+Serves two fake *arr instances with a browsable library
+(`fake_library_arr.py`) and asserts the Search page's flow: searching by name,
+by alternate title, by *arr id, TMDB id, TheTVDB id and `tt…` IMDb id; the
+season list of a picked series (specials dropped, monitored-only missing
+counts); a season's episodes; a picked movie's card; the error codes; a
+search + grab through the picked item; that the Sonarr/Radarr/Seerr links
+appear in the search results, the selection result and the history entry; and
+that repeated searches reuse the cached library listing.
 
 ## Seerr: movie requests
 

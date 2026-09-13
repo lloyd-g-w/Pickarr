@@ -28,7 +28,8 @@ lib/core/   pickarr_core  pure domain: types, config, title parsing, hard filter
                             explainability, pipeline orchestration
 lib/arr/    pickarr_arr   typed Sonarr v4 / Radarr v3 API clients + mapping to core types
 lib/llm/    pickarr_llm   OpenAI-compatible chat-completions client
-lib/server/ pickarr_server Dream routes, JSON config store, UI, automatic mode, webhooks
+lib/server/ pickarr_server Dream routes, JSON config store, UI, automatic mode, webhooks,
+                            library browsing and the "open in ..." links (library.ml)
 static/                     UI assets served by Dream
 test/core, test/arr, test/llm   Alcotest suites (one dune per directory)
 docs/API_RESEARCH.md        verified API reference (do not guess endpoints)
@@ -250,6 +251,10 @@ GET  /api/history                        recent selection results
 GET  /api/wanted/:instance_id            wanted (missing/cutoff) items
 POST /api/rules/propose                  {text} -> proposed structured rules (not saved)
 POST /api/rules/apply                    {patch} -> apply proposals after explicit approval
+GET  /api/library/:instance_id/search    Search the library by title or id (cached listing)
+GET  /api/library/:instance_id/series/:series_id           Picked series: seasons
+GET  /api/library/:instance_id/series/:series_id/season/:n Episodes of one season
+GET  /api/library/:instance_id/movie/:movie_id             Picked movie
 POST /api/webhook/:instance_id           Sonarr/Radarr webhook receiver
 POST /api/webhook/seerr                  Seerr/Overseerr/Jellyseerr webhook (MEDIA_APPROVED / MEDIA_AUTO_APPROVED)
 GET  /api/seerr/status                   Seerr poller status and last pass
@@ -307,6 +312,29 @@ Priority order (highest first):
 4. natural-language preferences
 5. deterministic scoring
 6. general default AI preferences
+
+## Library browsing and links
+
+`Client.library` lists a whole instance (`GET /api/v3/series` or
+`GET /api/v3/movie`) and caches it per instance for 60 seconds, so the Search
+page's one text box can match locally on title, sort title, alternate titles
+or any id. `lib/server/library.ml` holds that matching (pure, capped at 25
+results) and the link shapes, verified against the upstream front ends:
+
+```text
+Sonarr  {instance url}/series/{titleSlug}   frontend/src/App/AppRoutes.tsx
+Radarr  {instance url}/movie/{titleSlug}    frontend/src/App/AppRoutes.tsx,
+                                            Movie/MovieTitleLink.tsx
+Seerr   {seerr url}/movie/{tmdbId}          server/lib/notifications/agents/discord.ts
+Seerr   {seerr url}/tv/{tmdbId}             (same: `${url}/${mediaType}/${tmdbId}`)
+```
+
+Radarr addresses a movie by `titleSlug`, not by TMDB id: `MovieDetailsPage`
+looks the movie up by slug and shows "Movie cannot be found" for anything
+else. `Library.decorate` adds a `links` object to every media object in a
+response with one traversal at the response boundary, which keeps
+`Types.media` free of presentation concerns; history entries store the links
+they were written with.
 
 ## Automatic mode
 

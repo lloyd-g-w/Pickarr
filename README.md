@@ -76,13 +76,23 @@ environment overrides.
    large **Natural language preferences** editor is the point of Pickarr. Add
    hard rules (maximum size, minimum seeders, blocked codecs/groups) for the
    things that must never happen.
-5. **Search for a release.** *Search*: choose an instance, enter a movie or
-   episode id (or load the wanted list and press *Use*), optionally add a
-   one-off instruction, then **Search**. You get the winner, the "why"
-   bullets, the full candidate ranking and every rejected release with its
-   reason. Nothing is grabbed until you press **Grab selected** on the result
-   card, **Grab this** on any candidate row, or **Grab** (which searches and
-   grabs in one go).
+5. **Search for a release.** *Search*: choose an instance, type a title into
+   **Search your library** and press **Pick** on the result you want — no ids
+   to look up. A movie gives you a card with **Search** and **Grab**; a series
+   gives you its seasons, each with **Search**/**Grab** for a season pack and
+   an **Episodes** expander for single episodes, plus tickboxes and
+   **Search selected seasons** (nothing ticked = the whole series). Optionally
+   add a one-off instruction first. You get the winner, the "why" bullets, the
+   full candidate ranking and every rejected release with its reason. Nothing
+   is grabbed until you press **Grab selected** on the result card, **Grab
+   this** on any candidate row, or one of the **Grab** buttons (which search
+   and grab in one go).
+
+   The search box also takes ids, so anything you can paste works: a Sonarr
+   series id, a Radarr movie id, a TMDB or TheTVDB id, or an IMDb `tt…` id.
+   Every result, result card, request row and history row carries **Open in
+   Sonarr/Radarr** and **Open in Seerr** links (the Seerr one appears once a
+   Seerr URL is configured).
 6. **Let it run by itself (optional).** Enable *automatic* on an instance and
    automatic mode under *AI & Automatic*, leaving *Actually grab* off until the
    dry-run passes look right. See [automatic mode](#automatic-mode).
@@ -534,6 +544,10 @@ LLM fails, and 500 for anything unexpected.
 | POST | `/api/grab/:instance_id/:media_id` | Grab one named candidate (`{"release_id": "..."}`), re-searching first |
 | POST | `/api/grab/:instance_id/season/:series_id/:season_number` | Grab one named season pack |
 | GET | `/api/series/:instance_id/:series_id` | Series and per-season missing/total counts |
+| GET | `/api/library/:instance_id/search` | Search the instance's library (`?q=` a title or any id); 25 results with `links` |
+| GET | `/api/library/:instance_id/series/:series_id` | Picked series: seasons with missing/total counts |
+| GET | `/api/library/:instance_id/series/:series_id/season/:n` | Episodes of one season |
+| GET | `/api/library/:instance_id/movie/:movie_id` | Picked movie: file status and links |
 | GET | `/api/wanted/:instance_id` | Wanted items (`?kind=missing\|cutoff`) |
 | GET | `/api/history` | Recent selections (`?limit=`) |
 | GET | `/api/logs` | Recent log lines |

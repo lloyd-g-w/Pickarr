@@ -301,6 +301,23 @@ let arr_approved_component (w : Config.weights) (r : Types.release) =
     ]
   else []
 
+(* Only reachable when respect_arr_rejections is off (otherwise the filter
+   has already removed these releases). *)
+let arr_rejected_component (w : Config.weights) (r : Types.release) =
+  if (r.Types.arr_rejected || r.Types.arr_temporarily_rejected)
+     && w.Config.w_arr_rejected <> 0.
+  then
+    let why =
+      match r.Types.arr_rejection_reasons with
+      | [] -> "no reason given"
+      | rs -> String.concat "; " rs
+    in
+    [
+      component "arr_rejected" w.Config.w_arr_rejected
+        (Printf.sprintf "Sonarr/Radarr rejected it (%s) but you chose not to respect their rejections" why);
+    ]
+  else []
+
 let age_component (w : Config.weights) (r : Types.release) =
   match r.Types.age_hours with
   | Some h when h > 0. && w.Config.w_age_penalty_per_day > 0. ->
@@ -342,6 +359,7 @@ let score (p : Config.preferences) (w : Config.weights) (_media : Types.media)
         seeders_component w r;
         size_component p w r;
         arr_approved_component w r;
+        arr_rejected_component w r;
         age_component w r;
       ]
   in

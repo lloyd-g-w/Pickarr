@@ -165,6 +165,17 @@ list, AV1 is still rejected — and the UI tells you so:
 You said you prefer AV1, but AV1 is blocked by a hard codec rule.
 ```
 
+**Overriding Sonarr/Radarr's own rejections.** Level 1 is a switch: the hard
+rule *Respect Sonarr/Radarr rejections* (on by default). Turn it off and their
+policy rejections — quality not wanted in the profile, cutoff already met,
+minimum custom-format score, size limits, "waiting for a better release" —
+stop being hard. The release is instead penalised in scoring (weight
+`arr_rejected`, default −25), the reasons are shown in the candidate's
+explanation and passed to the AI as advisory `arr_rejections`, and Pickarr
+may grab it (`POST /api/v3/release` does not enforce them). Rejections that
+would make the grab fail anyway — unknown series/movie, unparseable release,
+blocklisted — remain hard regardless.
+
 ## Natural-language preferences
 
 A large editor on the **Rules & Preferences** page. The text is persisted and

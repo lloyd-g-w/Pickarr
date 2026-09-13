@@ -31,6 +31,12 @@ let system_prompt =
       "6. Prefer the release that best matches the user's wishes, not simply \
        the biggest or the highest `deterministic_score`. Explain trade-offs \
        in plain English.";
+      "7. A candidate with a non-empty `arr_rejections` list was rejected by \
+       Sonarr/Radarr's own rules but the user chose to let Pickarr override \
+       them; treat those reasons as advisory information (e.g. a quality the \
+       profile does not want, or a cutoff already met), prefer an approved \
+       candidate when it is otherwise comparable, and mention the rejection \
+       in your reason if you pick it anyway.";
       "";
       "RESPONSE FORMAT";
       "Reply with STRICT JSON ONLY. No prose, no markdown, no code fences. \
@@ -94,6 +100,11 @@ let candidate_to_yojson (s : Types.scored_release) : Yojson.Safe.t =
           (List.map (fun c -> c.Types.cf_name) r.Types.custom_formats) );
       ("is_repack", `Bool r.Types.is_repack);
       ("is_proper", `Bool r.Types.is_proper);
+      ("arr_approved", `Bool r.Types.arr_approved);
+      ( "arr_rejections",
+        (* Non-empty only when the user turned respect_arr_rejections off:
+           advisory, not binding. *)
+        Types.str_list r.Types.arr_rejection_reasons );
       ("deterministic_score", `Float (round2 s.Types.score));
     ]
 

@@ -300,7 +300,41 @@ let test_filter_arr_rejections () =
   in
   Alcotest.(check int)
     "temporary rejection ignored when configured" 0
-    (List.length (check lenient tmp))
+    (List.length (check lenient tmp));
+  (* permanent policy rejections become soft too *)
+  Alcotest.(check int)
+    "policy rejections ignored when configured" 0
+    (List.length (check lenient r));
+  (* ...but unrecoverable ones (mapping / blocklist) stay hard *)
+  let unmappable =
+    mk_release ~arr_rejected:true ~arr_approved:false
+      ~arr_rejection_reasons:
+        [ "Unable to identify correct episode(s) using release name and scene mappings";
+          "Quality HDTV-1080p is not wanted in profile" ]
+      ()
+  in
+  let kept = check lenient unmappable in
+  Alcotest.(check int) "only the unrecoverable reason remains" 1 (List.length kept);
+  Alcotest.(check string) "rule id" "arr_rejection_unrecoverable"
+    (List.hd kept).Types.rule;
+  Alcotest.(check int) "blocklisted stays hard" 1
+    (List.length
+       (check lenient
+          (mk_release ~arr_rejected:true ~arr_approved:false
+             ~arr_rejection_reasons:[ "Release is blocklisted" ] ())));
+  (* and in soft mode the release is penalised by scoring instead *)
+  let scored =
+    Scoring.score Config.default_preferences Config.default_weights
+      movie r
+  in
+  Alcotest.(check bool) "arr_rejected penalty component present" true
+    (List.exists (fun c -> c.Types.component = "arr_rejected") scored.Types.components);
+  let approved =
+    Scoring.score Config.default_preferences Config.default_weights
+      movie (mk_release ())
+  in
+  Alcotest.(check bool) "approved release scores higher than the rejected one" true
+    (approved.Types.score > scored.Types.score)
 
 let test_filter_multiple_reasons () =
   let rules =

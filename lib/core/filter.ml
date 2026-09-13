@@ -324,6 +324,24 @@ let check_title (h : Config.hard_rules) (r : Types.release) : Types.rejection li
    the highest-priority rule and is always honoured.  A temporary rejection
    (e.g. "release is still seeding", retry later) only rejects when the user
    asked us to respect *arr rejections. *)
+(* Rejections that mean Sonarr/Radarr could not map the release to the
+   series/movie (the grab would 404) or has blocklisted it.  These stay hard
+   even when the user chose not to respect *arr rejections.  Wording from
+   vendor/sonarr-DownloadDecisionMaker.cs and the Radarr equivalent. *)
+let unrecoverable_arr_rejection (message : string) : bool =
+  let m = String.lowercase_ascii message in
+  List.exists
+    (fun needle -> contains_ci ~needle ~haystack:m)
+    [
+      "unknown series";
+      "unknown movie";
+      "unable to identify";
+      "unable to parse";
+      "matches an alias";
+      "unexpected error";
+      "blocklist";
+    ]
+
 let check_arr (h : Config.hard_rules) (r : Types.release) : Types.rejection list =
   let reasons_of kind =
     match r.Types.arr_rejection_reasons with
@@ -334,9 +352,15 @@ let check_arr (h : Config.hard_rules) (r : Types.release) : Types.rejection list
         ]
     | rs -> List.map (fun m -> arr "arr_rejection" m) rs
   in
-  if r.Types.arr_rejected then reasons_of "Sonarr/Radarr"
-  else if r.Types.arr_temporarily_rejected && h.Config.respect_arr_rejections then
-    reasons_of "Sonarr/Radarr temporarily"
+  if h.Config.respect_arr_rejections then
+    if r.Types.arr_rejected then reasons_of "Sonarr/Radarr"
+    else if r.Types.arr_temporarily_rejected then reasons_of "Sonarr/Radarr temporarily"
+    else []
+  else if r.Types.arr_rejected || r.Types.arr_temporarily_rejected then
+    (* Soft mode: only the unrecoverable reasons still reject. *)
+    r.Types.arr_rejection_reasons
+    |> List.filter unrecoverable_arr_rejection
+    |> List.map (fun m -> arr "arr_rejection_unrecoverable" m)
   else []
 
 let check (h : Config.hard_rules) (r : Types.release) : Types.rejection list =

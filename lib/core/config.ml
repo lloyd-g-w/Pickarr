@@ -69,10 +69,13 @@ type hard_rules = {
   allowed_resolutions : int list;  (** If non-empty, only these resolutions. *)
   allowed_protocols : Types.protocol list;  (** If empty, all protocols. *)
   respect_arr_rejections : bool;
-      (** Treat releases rejected by Sonarr/Radarr as hard-rejected.  Note
-          that Sonarr/Radarr hard rejections are ALWAYS shown; this only
-          controls whether a "temporarily rejected" release may still be
-          considered. *)
+      (** [true] (default): releases rejected by Sonarr/Radarr are hard
+          rejected.  [false]: their rejections become soft — the release is
+          scored with the [w_arr_rejected] penalty, the reasons are shown to
+          the user and the LLM, and it may be grabbed (POST /api/v3/release
+          does not check them).  Rejections that would make the grab fail
+          anyway (unknown series/movie, unparseable release, blocklisted)
+          stay hard regardless. *)
   blocked_title_patterns : string list;
       (** Case-insensitive substrings / regexes that reject a release. *)
 }
@@ -120,6 +123,9 @@ type weights = {
   w_size_penalty_per_gib : float;
       (** Points lost per GiB outside the size tolerance window. *)
   w_arr_approved : float;
+  w_arr_rejected : float;
+      (** Penalty (negative) applied when Sonarr/Radarr rejected the release
+          but [respect_arr_rejections] is off. *)
   w_age_penalty_per_day : float;
   w_age_penalty_cap : float;
 }
@@ -230,6 +236,7 @@ let default_weights =
     w_seeders_cap = 20.0;
     w_size_penalty_per_gib = 2.0;
     w_arr_approved = 10.0;
+    w_arr_rejected = -25.0;
     w_age_penalty_per_day = 0.0;
     w_age_penalty_cap = 0.0;
   }
@@ -522,6 +529,7 @@ let weights_to_yojson (w : weights) : J.t =
       ("seeders_cap", `Float w.w_seeders_cap);
       ("size_penalty_per_gib", `Float w.w_size_penalty_per_gib);
       ("arr_approved", `Float w.w_arr_approved);
+      ("arr_rejected", `Float w.w_arr_rejected);
       ("age_penalty_per_day", `Float w.w_age_penalty_per_day);
       ("age_penalty_cap", `Float w.w_age_penalty_cap);
     ]
@@ -549,6 +557,7 @@ let weights_of_yojson ?(d = default_weights) (j : J.t) : weights =
     w_seeders_cap = get_float "seeders_cap" d.w_seeders_cap j;
     w_size_penalty_per_gib = get_float "size_penalty_per_gib" d.w_size_penalty_per_gib j;
     w_arr_approved = get_float "arr_approved" d.w_arr_approved j;
+    w_arr_rejected = get_float "arr_rejected" d.w_arr_rejected j;
     w_age_penalty_per_day = get_float "age_penalty_per_day" d.w_age_penalty_per_day j;
     w_age_penalty_cap = get_float "age_penalty_cap" d.w_age_penalty_cap j;
   }

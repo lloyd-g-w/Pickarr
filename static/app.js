@@ -208,7 +208,14 @@ const hardRulesSchema = [
     type: "bool",
     hint: "rejects DV profile 5",
   },
-  { key: "respect_arr_rejections", label: "Respect Sonarr/Radarr rejections", type: "bool" },
+  {
+    key: "respect_arr_rejections",
+    label: "Respect Sonarr/Radarr rejections",
+    type: "bool",
+    hint:
+      "on: anything Sonarr/Radarr reject (profile cutoff, minimum custom-format score, size limits, delay…) is off-limits. " +
+      "off: those become a scored penalty Pickarr and the AI may override; only unmappable or blocklisted releases stay rejected",
+  },
 ];
 
 const preferencesSchema = [
@@ -254,6 +261,7 @@ const weightKeys = [
   "seeders_cap",
   "size_penalty_per_gib",
   "arr_approved",
+  "arr_rejected",
   "age_penalty_per_day",
   "age_penalty_cap",
 ];

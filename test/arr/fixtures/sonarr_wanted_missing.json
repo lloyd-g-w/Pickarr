@@ -1,0 +1,34 @@
+{
+  "page": 1,
+  "pageSize": 10,
+  "sortKey": "episodes.airDateUtc",
+  "sortDirection": "descending",
+  "totalRecords": 42,
+  "records": [
+    {
+      "seriesId": 12,
+      "episodeFileId": 0,
+      "seasonNumber": 3,
+      "episodeNumber": 1,
+      "title": "Missing One",
+      "airDateUtc": "2024-06-01T01:00:00Z",
+      "runtime": 45,
+      "hasFile": false,
+      "monitored": true,
+      "series": {
+        "id": 12,
+        "title": "Some Show",
+        "year": 2019,
+        "qualityProfileId": 6,
+        "seriesType": "standard",
+        "genres": ["Action"],
+        "tags": [3],
+        "monitored": true,
+        "path": "/tv/Some Show",
+        "runtime": 45,
+        "originalLanguage": { "id": 1, "name": "English" }
+      },
+      "id": 6001
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "eventType": "Grab",
+  "instanceName": "Sonarr",
+  "applicationUrl": "https://sonarr.example",
+  "series": { "id": 12, "title": "Some Show", "titleSlug": "some-show", "tvdbId": 7654321, "type": "anime", "year": 2019, "genres": ["Animation"], "tags": ["anime"] },
+  "episodes": [
+    { "id": 5150, "episodeNumber": 5, "seasonNumber": 2, "title": "The One With The Release", "seriesId": 12, "tvdbId": 0 },
+    { "id": 5151, "episodeNumber": 6, "seasonNumber": 2, "title": "The Next One", "seriesId": 12, "tvdbId": 0 }
+  ],
+  "release": { "quality": "WEBDL-1080p", "qualityVersion": 1, "releaseGroup": "NTb", "releaseTitle": "Some.Show.S02E05.1080p.WEB-DL.DDP5.1.H.264-NTb", "indexer": "Example Indexer", "size": 2952790016 },
+  "downloadClient": "qBittorrent",
+  "downloadClientType": "qBittorrent",
+  "downloadId": "0123456789ABCDEF"
+}

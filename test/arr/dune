@@ -1,4 +1,6 @@
-(test
- (name test_arr)
+(tests
+ (names test_arr test_title_parser)
  (package selectarr)
+ (deps
+  (glob_files fixtures/*.json))
  (libraries selectarr_core selectarr_arr alcotest yojson lwt lwt.unix))

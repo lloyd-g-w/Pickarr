@@ -36,6 +36,31 @@ check() { # check <label> <expected> <actual>
   fi
 }
 
+# notfound/conflict make the fake reject every grab, so "did it grab?" flips.
+# In those modes a grab must instead report grabbed:false with a reason, and
+# must never produce a 500.
+case "$GRAB_MODE" in
+  notfound | conflict) GRAB_SUCCEEDS=false ;;
+  *) GRAB_SUCCEEDS=true ;;
+esac
+
+check_grabbed() { # check_grabbed <label>
+  local grabbed error
+  grabbed=$(field /tmp/grabbug-resp.json grabbed)
+  error=$(field /tmp/grabbug-resp.json grab_error)
+  if [ "$GRAB_SUCCEEDS" = true ]; then
+    check "$1 grabbed" true "$grabbed"
+  else
+    check "$1 not grabbed" false "$grabbed"
+    if [ "$error" = "null" ] || [ -z "$error" ]; then
+      echo "  FAIL $1: a failed grab must report grab_error"
+      FAIL=$((FAIL + 1))
+    else
+      echo "  PASS $1 reports grab_error: $error"
+    fi
+  fi
+}
+
 rm -rf "$DATA"; mkdir -p "$DATA"; rm -f "$COOKIE"
 
 python3 "$WT/test/smoke/fake_arr.py" sonarr $SONARR_PORT --grab-mode "$GRAB_MODE" & PIDS="$!"
@@ -115,8 +140,8 @@ check "no POST /release yet" 0 "$(grabs_for $SONARR_PORT)"
 
 echo "== select & grab, app route (sonarr)"
 post grab-sonarr "/api/select/sonarr/episode/$EP" '{"grab":true}'
-check "grabbed" true "$(field /tmp/grabbug-resp.json grabbed)"
-check "one POST /release" 1 "$(grabs_for $SONARR_PORT)"
+check_grabbed "app route sonarr"
+check "one POST /release" 1 "$(grabs_for $SONARR_PORT)"  # the call is made either way
 echo "    grab body: $(last_grab $SONARR_PORT)"
 python3 - "$(last_grab $SONARR_PORT)" "$EP" <<'PY'
 import json,sys
@@ -128,7 +153,7 @@ PY
 
 echo "== select & grab, app route (radarr)"
 post grab-radarr "/api/select/radarr/movie/$MV" '{"grab":true}'
-check "grabbed" true "$(field /tmp/grabbug-resp.json grabbed)"
+check_grabbed "app route radarr"
 echo "    grab body: $(last_grab $RADARR_PORT)"
 python3 - "$(last_grab $RADARR_PORT)" "$MV" <<'PY'
 import json,sys
@@ -140,17 +165,17 @@ PY
 
 echo "== select & grab, instance route (the one the UI uses)"
 post grab-instance "/api/select/sonarr/$EP" '{"grab":true}'
-check "grabbed" true "$(field /tmp/grabbug-resp.json grabbed)"
+check_grabbed "instance route"
 
 echo "== grab via ?grab=true query form, empty body"
 post grab-query "/api/select/sonarr/$EP?grab=true" ''
-check "grabbed" true "$(field /tmp/grabbug-resp.json grabbed)"
+check_grabbed "?grab=true"
 
 echo "== use_ai true with the LLM unreachable (must fall back and still grab)"
 curl -s -o /dev/null -b $COOKIE -X PUT -H 'Content-Type: application/json' "$BASE/api/config" \
   -d "{\"llm\":{\"enabled\":true,\"base_url\":\"http://127.0.0.1:$LLM_PORT/v1\",\"api_key\":\"x\",\"model\":\"m\"}}"
 post grab-llm-down "/api/select/sonarr/$EP" '{"grab":true,"use_ai":true}'
-check "grabbed despite LLM failure" true "$(field /tmp/grabbug-resp.json grabbed)"
+check_grabbed "with the LLM down"
 python3 - <<'PY'
 import json
 r=json.load(open('/tmp/grabbug-resp.json'))
@@ -170,7 +195,7 @@ RID=$(python3 -c "
 import json;r=json.load(open('/tmp/grabbug-last-preview-sonarr.json'));print(r['candidates'][0]['release']['id'])" 2>/dev/null)
 if [ -n "${RID:-}" ]; then
   post grab-by-id "/api/grab/sonarr/$EP" "{\"release_id\":$(python3 -c "import json,sys;print(json.dumps(sys.argv[1]))" "$RID")}"
-  check "grabbed" true "$(field /tmp/grabbug-resp.json grabbed)"
+  check_grabbed "grab by release id"
   post grab-by-id-unknown "/api/grab/sonarr/$EP" '{"release_id":"does-not-exist"}' 404
 else
   echo "  SKIP (no candidate id available)"

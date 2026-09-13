@@ -30,8 +30,11 @@ per-candidate grab that the *arr release cache makes necessary.
 
 ## What was verified as working (evidence)
 
-`bash test/smoke/select_grab_e2e.sh <echo|nulls|empty|text>` → `E2E RESULT: all checks
-passed` for all four success-body shapes, after the fixes below:
+`bash test/smoke/select_grab_e2e.sh <mode>` → `E2E RESULT: all checks passed`
+for every mode (`echo`, `nulls`, `empty`, `text`, `notfound`, `conflict`)
+after the fixes below. The mode decides what the fake `POST /api/v3/release`
+answers; the success modes must grab, the failure modes must report
+`grabbed:false` with a `grab_error` and never a 5xx:
 
 * Route order in `lib/server/routes.ml` is correct. `/select/radarr/movie/:id`
   and `/select/sonarr/episode/:id` are registered **before**

@@ -233,6 +233,9 @@ POST /api/llm/test                       test LLM
 POST /api/select/radarr/movie/:id        select for default Radarr instance   body: {grab?, instruction?, use_ai?}
 POST /api/select/sonarr/episode/:id      select for default Sonarr instance
 POST /api/select/:instance_id/:media_id  select for a specific instance
+POST /api/grab/:instance_id/:media_id    grab one named candidate {release_id}
+POST /api/grab/:instance_id/season/:series_id/:season_number
+                                         grab one named season pack {release_id}
 GET  /api/history                        recent selection results
 GET  /api/wanted/:instance_id            wanted (missing/cutoff) items
 POST /api/rules/propose                  {text} -> proposed structured rules (not saved)
@@ -244,7 +247,10 @@ POST /api/seerr/test                     test the saved Seerr connection
 GET  /api/seerr/requests                 requests (?filter=pending|processing|..., ?take=)
 POST /api/seerr/requests/:id/approve     approve in Seerr, then fulfil
 POST /api/seerr/requests/:id/decline     decline in Seerr
-POST /api/seerr/requests/:id/fulfil      run a selection for that request now
+POST /api/seerr/requests/:id/fulfil      run a selection for that request now (background)
+POST /api/seerr/requests/:id/resolve     what the request maps to in Sonarr/Radarr (no search)
+POST /api/seerr/requests/:id/select      run the pipeline for the request, answering like /api/select
+                                         body: {grab?, instruction?, use_ai?, instance_id?, season_number?, approve?}
 POST /api/seerr/run                      run a Seerr pass now
 GET  /api/automatic/status               scheduler status
 POST /api/automatic/run                  trigger a scheduler pass now
@@ -318,3 +324,16 @@ must not depend on `Automatic`: `Automatic` depends on it):
   satisfied by one season pack under the usual `Config.seasons` policy.
 * `seasons_to_compact` renders the per-season outcome (pack / episodes /
   skipped) that the Requests tab displays.
+
+The Requests tab can also work a request by hand, the way the Select page
+works a media id. `Seerr_sync.resolve_request` answers what the request maps
+to on each instance without searching (movie id, or series id plus the
+requested seasons with their missing/total counts), and
+`Seerr_sync.select_for_request` runs the pipeline for it and answers with the
+same payload the select routes return (`selection`, `series` or `selections`,
+plus the request and the instance used). A pending request is refused unless
+the body carries `approve: true`, in which case it is approved first and the
+*arr is given up to ~90s to add the item. Only a grab records the cooldown
+attempt, so previewing never starves the poller. The pure parts
+(`select_body_of_json`, `pending_decision`, `nothing_reason`) are unit
+tested.

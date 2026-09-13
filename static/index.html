@@ -374,6 +374,37 @@
 
         <h3>Approved, waiting for a release</h3>
         <div id="seerr-processing">Loading…</div>
+
+        <!-- Opened by Preview / Select & grab on a request row: the same
+             ranking, explanation and per-candidate Grab buttons as the
+             Select page, for the media the request resolved to. -->
+        <section id="seerr-request-panel" class="request-panel" hidden>
+          <div class="request-panel-head">
+            <h3 id="seerr-panel-title">Request</h3>
+            <button id="seerr-panel-close" class="small">Close</button>
+          </div>
+          <div id="seerr-panel-header"></div>
+
+          <h4>In Sonarr / Radarr</h4>
+          <div id="seerr-panel-targets">Resolving…</div>
+
+          <label class="block">
+            Instruction for this selection
+            <span class="hint-inline">applies only to this run and is not saved</span>
+            <textarea
+              id="seerr-instruction"
+              rows="2"
+              placeholder="For this one, pick the highest quality release regardless of size."
+            ></textarea>
+          </label>
+          <p>
+            <label class="inline"><input id="seerr-use-ai" type="checkbox" /> Use AI</label>
+            <button id="seerr-panel-preview" class="primary">Preview</button>
+            <button id="seerr-panel-grab" class="danger">Select &amp; grab</button>
+            <span id="seerr-select-status" class="result"></span>
+          </p>
+          <div id="seerr-request-result"></div>
+        </section>
       </section>
     </main>
 

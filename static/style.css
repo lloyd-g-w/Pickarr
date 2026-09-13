@@ -529,3 +529,25 @@ ol.steps button {
 .with-toggle input {
   flex: 1 1 auto;
 }
+
+/* The Requests tab's per-request panel: the Select page's result area,
+   opened underneath the request lists. */
+.request-panel {
+  margin-top: 1.2rem;
+  padding: 0.9rem 1rem 1rem;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  background: var(--panel);
+}
+
+.request-panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.request-panel-head h3 {
+  margin: 0;
+}

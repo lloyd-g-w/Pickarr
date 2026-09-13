@@ -145,6 +145,33 @@ type automatic = {
       (** Run selection immediately when a webhook event arrives. *)
 }
 
+(** Season-pack behaviour for Sonarr (manual series/season selection,
+    automatic mode and Seerr requests). *)
+type seasons = {
+  prefer_packs : bool;
+      (** Try a season pack before falling back to episode-by-episode. *)
+  min_missing_fraction : float;
+      (** Only use a pack when at least this fraction of the season's
+          monitored episodes is missing (avoids re-downloading a whole season
+          for one episode).  0.0-1.0. *)
+  fallback_to_episodes : bool;
+      (** When no acceptable pack exists, select the missing episodes
+          individually. *)
+}
+
+(** Seerr / Overseerr / Jellyseerr request integration. *)
+type seerr = {
+  seerr_enabled : bool;
+  seerr_url : string;  (** e.g. http://seerr:5055 *)
+  seerr_api_key : string;
+  seerr_poll_interval_seconds : int;
+  seerr_auto_approve : bool;  (** Approve pending requests automatically. *)
+  seerr_process_approved : bool;
+      (** Search + select for approved requests that are not available yet. *)
+  seerr_grab : bool;  (** Actually grab (false = dry run). *)
+  seerr_max_requests_per_run : int;
+}
+
 type t = {
   instances : instance list;
   llm : llm;
@@ -153,6 +180,8 @@ type t = {
   weights : weights;
   nl_preferences : string;  (** Global natural-language preferences *)
   automatic : automatic;
+  seasons : seasons;
+  seerr : seerr;
   log_level : string;
 }
 
@@ -253,6 +282,21 @@ let default_automatic =
     auto_webhook_trigger = true;
   }
 
+let default_seasons =
+  { prefer_packs = true; min_missing_fraction = 0.5; fallback_to_episodes = true }
+
+let default_seerr =
+  {
+    seerr_enabled = false;
+    seerr_url = "";
+    seerr_api_key = "";
+    seerr_poll_interval_seconds = 120;
+    seerr_auto_approve = false;
+    seerr_process_approved = true;
+    seerr_grab = true;
+    seerr_max_requests_per_run = 10;
+  }
+
 let default =
   {
     instances = [];
@@ -262,6 +306,8 @@ let default =
     weights = default_weights;
     nl_preferences = "";
     automatic = default_automatic;
+    seasons = default_seasons;
+    seerr = default_seerr;
     log_level = "info";
   }
 
@@ -587,6 +633,54 @@ let automatic_of_yojson ?(d = default_automatic) (j : J.t) : automatic =
     auto_webhook_trigger = get_bool "webhook_trigger" d.auto_webhook_trigger j;
   }
 
+let seasons_to_yojson (s : seasons) : J.t =
+  `Assoc
+    [
+      ("prefer_packs", `Bool s.prefer_packs);
+      ("min_missing_fraction", `Float s.min_missing_fraction);
+      ("fallback_to_episodes", `Bool s.fallback_to_episodes);
+    ]
+
+let seasons_of_yojson ?(d = default_seasons) (j : J.t) : seasons =
+  {
+    prefer_packs = get_bool "prefer_packs" d.prefer_packs j;
+    min_missing_fraction =
+      Float.min 1.0 (Float.max 0.0 (get_float "min_missing_fraction" d.min_missing_fraction j));
+    fallback_to_episodes = get_bool "fallback_to_episodes" d.fallback_to_episodes j;
+  }
+
+let seerr_to_yojson (s : seerr) : J.t =
+  `Assoc
+    [
+      ("enabled", `Bool s.seerr_enabled);
+      ("url", `String s.seerr_url);
+      ("api_key", `String s.seerr_api_key);
+      ("poll_interval_seconds", `Int s.seerr_poll_interval_seconds);
+      ("auto_approve", `Bool s.seerr_auto_approve);
+      ("process_approved", `Bool s.seerr_process_approved);
+      ("grab", `Bool s.seerr_grab);
+      ("max_requests_per_run", `Int s.seerr_max_requests_per_run);
+    ]
+
+let strip_slash url =
+  if String.length url > 0 && url.[String.length url - 1] = '/' then
+    String.sub url 0 (String.length url - 1)
+  else url
+
+let seerr_of_yojson ?(d = default_seerr) (j : J.t) : seerr =
+  {
+    seerr_enabled = get_bool "enabled" d.seerr_enabled j;
+    seerr_url = strip_slash (String.trim (get_str "url" d.seerr_url j));
+    seerr_api_key = get_str "api_key" d.seerr_api_key j;
+    seerr_poll_interval_seconds =
+      max 30 (get_int "poll_interval_seconds" d.seerr_poll_interval_seconds j);
+    seerr_auto_approve = get_bool "auto_approve" d.seerr_auto_approve j;
+    seerr_process_approved = get_bool "process_approved" d.seerr_process_approved j;
+    seerr_grab = get_bool "grab" d.seerr_grab j;
+    seerr_max_requests_per_run =
+      max 1 (get_int "max_requests_per_run" d.seerr_max_requests_per_run j);
+  }
+
 (** [redact] replaces secrets with "********" for API responses / logs. *)
 let to_yojson ?(redact = false) (c : t) : J.t =
   let red s = if redact && s <> "" then "********" else s in
@@ -603,6 +697,8 @@ let to_yojson ?(redact = false) (c : t) : J.t =
       ("weights", weights_to_yojson c.weights);
       ("nl_preferences", `String c.nl_preferences);
       ("automatic", automatic_to_yojson c.automatic);
+      ("seasons", seasons_to_yojson c.seasons);
+      ("seerr", seerr_to_yojson { c.seerr with seerr_api_key = red c.seerr.seerr_api_key });
       ("log_level", `String c.log_level);
     ]
 
@@ -628,6 +724,8 @@ let of_yojson ?(d = default) (j : J.t) : (t, string) result =
           weights = weights_of_yojson ~d:d.weights (sub "weights");
           nl_preferences = get_str "nl_preferences" d.nl_preferences j;
           automatic = automatic_of_yojson ~d:d.automatic (sub "automatic");
+          seasons = seasons_of_yojson ~d:d.seasons (sub "seasons");
+          seerr = seerr_of_yojson ~d:d.seerr (sub "seerr");
           log_level = get_str "log_level" d.log_level j;
         }
 
@@ -655,6 +753,11 @@ let patch (existing : t) (j : J.t) : (t, string) result =
               c.llm with
               llm_api_key = keep_secret existing.llm.llm_api_key c.llm.llm_api_key;
             };
+          seerr =
+            {
+              c.seerr with
+              seerr_api_key = keep_secret existing.seerr.seerr_api_key c.seerr.seerr_api_key;
+            };
         }
 
 (* ------------------------------------------------------------------------ *)
@@ -675,6 +778,7 @@ let patch (existing : t) (j : J.t) : (t, string) result =
     - ALLOW_REMUX, PREFER_REMUX (true|false)
     - NL_PREFERENCES
     - AUTO_MODE_ENABLED, AUTO_MODE_GRAB, AUTO_MODE_INTERVAL_SECONDS
+    - SEERR_URL, SEERR_API_KEY, SEERR_ENABLED, SEERR_AUTO_APPROVE, SEERR_GRAB
     - LOG_LEVEL
 
     [getenv] is injected for testability. *)
@@ -784,6 +888,19 @@ let apply_env ?(getenv = Sys.getenv_opt) (c : t) : t =
         auto_interval_seconds =
           int_env "AUTO_MODE_INTERVAL_SECONDS" c.automatic.auto_interval_seconds;
       };
+    seerr =
+      (let url = strip_slash (str_env "SEERR_URL" c.seerr.seerr_url) in
+       let key = str_env "SEERR_API_KEY" c.seerr.seerr_api_key in
+       {
+         c.seerr with
+         seerr_url = url;
+         seerr_api_key = key;
+         seerr_enabled =
+           bool_env "SEERR_ENABLED"
+             (c.seerr.seerr_enabled || (env "SEERR_URL" <> None && env "SEERR_API_KEY" <> None));
+         seerr_auto_approve = bool_env "SEERR_AUTO_APPROVE" c.seerr.seerr_auto_approve;
+         seerr_grab = bool_env "SEERR_GRAB" c.seerr.seerr_grab;
+       });
     log_level = str_env "LOG_LEVEL" c.log_level;
   }
 

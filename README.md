@@ -76,11 +76,13 @@ environment overrides.
    large **Natural language preferences** editor is the point of Pickarr. Add
    hard rules (maximum size, minimum seeders, blocked codecs/groups) for the
    things that must never happen.
-5. **Run a selection.** *Select*: choose an instance, enter a movie or episode
-   id (or load the wanted list and press *Use*), optionally add a one-off
-   instruction, then **Preview**. You get the winner, the "why" bullets, the
-   full candidate ranking and every rejected release with its reason. Press
-   **Select & grab** when you are happy.
+5. **Search for a release.** *Search*: choose an instance, enter a movie or
+   episode id (or load the wanted list and press *Use*), optionally add a
+   one-off instruction, then **Search**. You get the winner, the "why"
+   bullets, the full candidate ranking and every rejected release with its
+   reason. Nothing is grabbed until you press **Grab selected** on the result
+   card, **Grab this** on any candidate row, or **Grab** (which searches and
+   grabs in one go).
 6. **Let it run by itself (optional).** Enable *automatic* on an instance and
    automatic mode under *AI & Automatic*, leaving *Actually grab* off until the
    dry-run passes look right. See [automatic mode](#automatic-mode).
@@ -175,38 +177,38 @@ A request is retried at most once every six hours, so one that nothing can be
 found for does not occupy every pass. Requests whose media is already
 available are never touched.
 
-Approving from the Requests tab approves in Seerr **and** starts the selection
-immediately; *Fulfil now* re-runs the selection for an already approved
-request.
+On the Requests tab, **Approve** approves in Seerr and does nothing else,
+while **Approve & grab** approves and then searches and grabs straight away.
 
 ### Working a request by hand
 
 The poller decides on its own. When you want to look first, every request row
-also has **Preview** and **Select & grab**, which open the request in a panel
-that works exactly like the [Select page](#manual-selection):
+also has **Search** and **Grab**, which open the request in a panel that works
+exactly like the Search page:
 
 1. Pickarr resolves the request against your instances *without searching* —
    the movie id for a Radarr request, or the series id and the requested
    seasons (with how many episodes each is missing) for a Sonarr one. A
    request Seerr has not pushed to the *arr yet says so instead.
-2. **Preview** runs the full pipeline and shows the ranked candidates, the
+2. **Search** runs the full pipeline and shows the ranked candidates, the
    rejected releases with their reasons, the explanation and the AI decision.
    Nothing is grabbed.
-3. You can add an **instruction for this selection** ("pick the highest
-   quality regardless of size") and toggle **Use AI** for that run only.
-   Neither is saved.
-4. **Select & grab** takes the winner; the **Grab** button on any candidate
-   row takes that release instead. Hard-rejected releases are still refused.
-5. For a TV request each requested season has its own *Preview* and
-   *Select & grab*, so one season can be worked on its own; running the whole
-   request covers every requested season under the usual pack policy.
+3. You can add an **instruction for this search** ("pick the highest quality
+   regardless of size") and toggle **Use AI** for that run only. Neither is
+   saved.
+4. **Grab selected** takes the winner; **Grab this** on any candidate row
+   takes that release instead. Hard-rejected releases are still refused.
+5. For a TV request each requested season has its own *Search* and *Grab*, so
+   one season can be worked on its own; running the whole request covers every
+   requested season under the usual pack policy.
 
-A request that is still pending shows **Approve & select**: it approves in
-Seerr first, waits for Seerr to push the item to Sonarr/Radarr, and then
-selects. Selecting a pending request without approving it is refused
-(HTTP 409) — Pickarr never approves anything implicitly.
+A request that is still pending shows **Approve & grab** (and, in the panel,
+**Approve & search**): it approves in Seerr first, waits for Seerr to push the
+item to Sonarr/Radarr, and then searches. Searching a pending request without
+approving it is refused (HTTP 409) — Pickarr never approves anything
+implicitly.
 
-Only an actual grab starts the six-hour cooldown, so previewing a request as
+Only an actual grab starts the six-hour cooldown, so searching a request as
 often as you like does not stop the poller from working on it.
 
 Note on Seerr's own "search on add": in sidecar mode you disable automatic
@@ -325,10 +327,10 @@ blocklisted — remain hard regardless.
 ## Seasons and whole series
 
 Besides a single movie or episode, Pickarr can fill a whole **season** from
-one season pack, or walk a whole **series** season by season. On the *Select*
+one season pack, or walk a whole **series** season by season. On the *Search*
 page choose *What* → *Season (pack)* or *Whole series*, enter the Sonarr
 series id and press *Load seasons* to see what is missing per season, with
-*Select* / *Select & grab* buttons per row.
+*Search* / *Grab* buttons per row.
 
 A season selection searches `GET /api/v3/release?seriesId=…&seasonNumber=…`.
 That search also returns single episodes, so Pickarr hard-rejects anything
@@ -546,7 +548,7 @@ LLM fails, and 500 for anything unexpected.
 | GET | `/api/seerr/requests` | Requests (`?filter=pending\|processing\|approved\|available\|failed\|all`, `?take=`) |
 | POST | `/api/seerr/requests/:id/approve` | Approve in Seerr and fulfil immediately |
 | POST | `/api/seerr/requests/:id/decline` | Decline in Seerr |
-| POST | `/api/seerr/requests/:id/fulfil` | Run a selection for that request now (in the background) |
+| POST | `/api/seerr/requests/:id/fulfil` | Search and grab for that request in the background (what the UI's *Grab* does synchronously; kept for scripts) |
 | POST | `/api/seerr/requests/:id/resolve` | What the request maps to in Sonarr/Radarr, without searching |
 | POST | `/api/seerr/requests/:id/select` | Run the pipeline for the request and answer like `/api/select` (`{grab?, instruction?, use_ai?, instance_id?, season_number?, approve?}`) |
 | POST | `/api/seerr/run` | Run a Seerr pass now |
@@ -554,7 +556,7 @@ LLM fails, and 500 for anything unexpected.
 Requests below assume no authentication; add `-H 'X-Api-Key: <key>'` when an
 API key is configured.
 
-### Preview a selection
+### Search without grabbing
 
 ```bash
 curl -s -X POST http://localhost:8484/api/select/radarr/movie/123 \
@@ -562,7 +564,7 @@ curl -s -X POST http://localhost:8484/api/select/radarr/movie/123 \
   -d '{"grab": false}' | jq
 ```
 
-### Select and grab, with a one-off instruction
+### Search and grab, with a one-off instruction
 
 ```bash
 curl -s -X POST http://localhost:8484/api/select/sonarr/episode/4567 \
@@ -731,9 +733,9 @@ specifications and source, not guessed; see
   Pickarr to use; `GET /api/v3/release` is the interactive-search path.
 * A release-grab request must use a `guid` + `indexerId` that the instance
   still has in its interactive-search cache, whose TTL is 30 minutes. Pickarr
-  always grabs within seconds of its own search (pressing *Select & grab* in the
-  UI re-runs the pipeline rather than reusing the preview), so this only
-  matters if you drive the API yourself and delay the grab.
+  always grabs within seconds of its own search (every *Grab* button in the UI
+  re-runs the search server-side rather than reusing an earlier one), so this
+  only matters if you drive the API yourself and delay the grab.
 * Codec, audio, HDR and Dolby Vision are parsed from release titles, because
   the *arr APIs do not expose them. Titles lie sometimes; hard rules that
   depend on them are best-effort by nature (Sonarr/Radarr custom formats have

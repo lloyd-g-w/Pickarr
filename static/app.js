@@ -533,7 +533,7 @@ async function runSelection(grab) {
   if (instruction) body.instruction = instruction;
   setResult(
     "#select-status",
-    grab ? "searching indexers and grabbing…" : "searching indexers…",
+    grab ? "searching and grabbing…" : "searching…",
     true
   );
   $("#select-result").replaceChildren();
@@ -553,16 +553,17 @@ async function runSelection(grab) {
   }
 }
 
-/* Grab a candidate the pipeline did not pick.  The server re-runs the search
-   first, because Sonarr/Radarr only accept releases from the last search. */
+/* Grab one release from a search result: the winner ("Grab selected") or any
+   other candidate ("Grab this").  The server re-runs the search first, because
+   Sonarr/Radarr only accept releases from their own last search; the UI itself
+   does not search again and simply redraws with the answer. */
 async function grabCandidate(release, button, ctx) {
-  if (!ctx || !ctx.instanceId || !ctx.media)
-    return toast("Run a selection first", true);
-  if (!confirm(`Tell the instance to grab:\n\n${release.title}`)) return;
+  if (!ctx || !ctx.instanceId || !ctx.media) return toast("Search first", true);
+  if (!confirm(`Grab this release now?\n\n${release.title}`)) return;
   const previous = button.textContent;
   button.disabled = true;
   button.textContent = "grabbing…";
-  ctx.setStatus("re-searching, then grabbing…", true);
+  ctx.setStatus("grabbing…", true);
   try {
     const result = await api(grabUrlFor(ctx.instanceId, ctx.media), {
       method: "POST",
@@ -587,8 +588,8 @@ function releaseRow(scored, isWinner, ctx) {
   const r = scored.release;
   const button = el(
     "button",
-    { class: "small", title: "Grab this release instead of the selected one" },
-    isWinner ? "Grab again" : "Grab"
+    { class: "small", title: "Grab this release" },
+    isWinner && ctx && ctx.grabbed ? "Grab again" : "Grab this"
   );
   button.addEventListener("click", () => grabCandidate(r, button, ctx));
   return el(
@@ -619,6 +620,7 @@ function renderSelectionResult(result, target, ctx) {
   const rowContext = {
     instanceId: base.instanceId,
     media: media,
+    grabbed: !!result.grabbed,
     setStatus: base.setStatus || ((m, ok) => setResult("#select-status", m, ok)),
     rerender: (updated) => renderSelectionResult(updated, container, base),
   };
@@ -640,7 +642,11 @@ function renderSelectionResult(result, target, ctx) {
         " ",
         result.llm ? el("span", { class: "badge" }, `confidence ${(result.llm.confidence * 100).toFixed(0)}%`) : null,
         " ",
-        el("span", { class: "badge " + (result.grabbed ? "ok" : "") }, result.grabbed ? "grabbed" : "not grabbed")
+        el(
+          "span",
+          { class: "badge " + (result.grabbed ? "ok" : "") },
+          result.grabbed ? "grabbed" : result.grab_error ? "not grabbed" : "not grabbed yet"
+        )
       ),
       method.llm_error ? el("div", { class: "conflicts" }, "AI unavailable, used deterministic scoring: " + method.llm_error) : null,
       result.grab_error ? el("div", { class: "conflicts" }, "Grab failed: " + result.grab_error) : null
@@ -649,6 +655,16 @@ function renderSelectionResult(result, target, ctx) {
 
   if (result.selected) {
     const sel = result.selected;
+    /* A search leaves the winner ungrabbed on purpose, so the result card
+       carries the grab action itself. */
+    const grabSelected = el(
+      "button",
+      { class: "primary", title: "Grab the release Pickarr picked" },
+      result.grabbed ? "Grab again" : "Grab selected"
+    );
+    grabSelected.addEventListener("click", () =>
+      grabCandidate(sel.release, grabSelected, rowContext)
+    );
     children.push(
       el(
         "div",
@@ -660,6 +676,7 @@ function renderSelectionResult(result, target, ctx) {
           { class: "hint" },
           `${fmtGiB(sel.release.size_bytes)} · score ${sel.score.toFixed(1)} · ${num(sel.release.indexer, "unknown indexer")}`
         ),
+        el("p", { class: "grab-actions" }, grabSelected),
         el("h3", {}, "Why"),
         el(
           "ul",
@@ -905,22 +922,23 @@ function renderSeasons(data) {
                     runSeasonSelection(false);
                   },
                 },
-                "Select"
+                "Search"
               ),
               " ",
               el(
                 "button",
                 {
-                  class: "small danger",
+                  class: "small primary",
                   onclick: () => {
-                    if (!confirm(`Grab a pack for season ${s.season_number}?`)) return;
+                    if (!confirm(`Search and grab the best pack for season ${s.season_number} now?`))
+                      return;
                     $("#select-what").value = "season";
                     $("#select-season-number").value = s.season_number;
                     updateSelectMode();
                     runSeasonSelection(true);
                   },
                 },
-                "Select & grab"
+                "Grab"
               )
             )
           )
@@ -937,7 +955,11 @@ async function runSeasonSelection(grab) {
   if (!instanceId) return toast("Configure an instance first", true);
   if (!seriesId || seriesId < 1) return toast("Enter a series id", true);
   if (Number.isNaN(season) || season < 0) return toast("Enter a season number", true);
-  setResult("#select-status", grab ? "selecting a pack and grabbing…" : "selecting a pack…", true);
+  setResult(
+    "#select-status",
+    grab ? "searching for a pack and grabbing…" : "searching for a pack…",
+    true
+  );
   $("#select-result").replaceChildren();
   try {
     const result = await api(
@@ -965,7 +987,11 @@ async function runSeriesSelection(grab) {
   const body = selectionBody(grab);
   const seasons = parsedSeasonList();
   if (seasons.length) body.seasons = seasons;
-  setResult("#select-status", grab ? "selecting the series and grabbing…" : "selecting the series…", true);
+  setResult(
+    "#select-status",
+    grab ? "searching the whole series and grabbing…" : "searching the whole series…",
+    true
+  );
   $("#select-result").replaceChildren();
   try {
     const result = await api(`/api/select/${encodeURIComponent(instanceId)}/series/${seriesId}`, {
@@ -997,7 +1023,7 @@ function renderSeriesResult(result, target, ctx) {
       el(
         "div",
         { class: "hint" },
-        `${summary.seasons || 0} season(s) considered · ${summary.selections || 0} selection(s) · ` +
+        `${summary.seasons || 0} season(s) considered · ${summary.selections || 0} search(es) · ` +
           `${summary.selected || 0} with a winner · ${summary.grabbed || 0} grabbed`
       )
     ),
@@ -1018,7 +1044,7 @@ function renderSeriesResult(result, target, ctx) {
       renderSelectionResult(outcome.selection, body, base);
     } else if (outcome.kind === "episodes") {
       head.appendChild(
-        el("span", { class: "badge" }, `${(outcome.selections || []).length} episode selection(s)`)
+        el("span", { class: "badge" }, `${(outcome.selections || []).length} episode search(es)`)
       );
       for (const selection of outcome.selections || []) {
         const card = el("div", {});
@@ -1045,7 +1071,7 @@ function selectionLabel(selection) {
   return `${media.title || ""}${episode} — ${title}${selection.grabbed ? " (grabbed)" : ""}`;
 }
 
-/* The Preview / Select & grab buttons act on whatever mode is selected. */
+/* The Search / Grab buttons act on whatever mode is selected. */
 function runCurrentSelection(grab) {
   switch (selectMode()) {
     case "season":
@@ -1094,7 +1120,7 @@ async function loadWanted() {
                     class: "small",
                     onclick: () => {
                       $("#select-media-id").value = item.media_id;
-                      toast(`Selected ${item.label}`);
+                      toast(`Using ${item.label}`);
                     },
                   },
                   "Use"
@@ -1379,7 +1405,7 @@ async function loadHistory() {
   try {
     const entries = await api("/api/history?limit=100");
     if (!entries.length) {
-      container.replaceChildren(el("p", { class: "hint" }, "No selections yet."));
+      container.replaceChildren(el("p", { class: "hint" }, "No searches yet."));
       return;
     }
     container.replaceChildren(
@@ -1512,8 +1538,8 @@ function renderGetStarted() {
     "Write preferences",
   ]);
   steps.push([
-    "Run a selection",
-    "Pick an instance and a movie or episode, preview the ranking, then grab the winner.",
+    "Search for a release",
+    "Pick an instance and a movie or episode, search, then grab the winner \u2014 or any candidate you prefer.",
     "select",
     "Try it",
   ]);
@@ -1598,9 +1624,9 @@ function wire() {
     button.addEventListener("click", () => showTab(button.dataset.tab));
   }
 
-  $("#btn-preview").addEventListener("click", () => runCurrentSelection(false));
+  $("#btn-search").addEventListener("click", () => runCurrentSelection(false));
   $("#btn-grab").addEventListener("click", () => {
-    if (confirm("Tell the instance to grab the selected release?")) runCurrentSelection(true);
+    if (confirm("Search and grab the best release now?")) runCurrentSelection(true);
   });
   $("#load-wanted").addEventListener("click", loadWanted);
 
@@ -1818,7 +1844,11 @@ function renderSeerrDashboard() {
   }
   if (!s.enabled) {
     container.replaceChildren(
-      el("p", { class: "hint" }, "Off. Configure it on the Requests tab to fulfil Seerr requests.")
+      el(
+        "p",
+        { class: "hint" },
+        "Off. Configure it on the Requests tab to search and grab Seerr requests."
+      )
     );
     return;
   }
@@ -1848,7 +1878,7 @@ function renderSeerrPoller() {
     ["Connection", s.configured ? "configured" : s.detail || "—"],
     ["Interval", s.interval_seconds ? `${s.interval_seconds}s` : "—"],
     ["Approving", s.auto_approve ? "automatic" : "manual"],
-    ["Fulfilling", s.process_approved ? "yes" : "no"],
+    ["Searching approved requests", s.process_approved ? "yes" : "no"],
     ["Grabbing", s.grab ? "yes" : "no (dry run)"],
     ["Runs", num(s.runs, 0)],
     ["Last run", num(s.last_run_at)],
@@ -1865,8 +1895,8 @@ function renderSeerrPoller() {
   renderSeerrResults((s.last_results || []).slice(0, 25));
 }
 
-/* One line per season of a fulfilled TV request: what Pickarr did with it.
-   The shape comes from Fulfil.season_to_compact. */
+/* One line per season of a TV request the poller worked on: what Pickarr did
+   with it.  The shape comes from Fulfil.season_to_compact. */
 function seasonOutcomeLine(s) {
   const season = `S${String(s.season_number).padStart(2, "0")}`;
   if (s.kind === "skipped") return `${season}: skipped (${s.reason || "nothing to do"})`;
@@ -1929,8 +1959,8 @@ async function seerrAction(requestId, action, statusNode) {
   try {
     const r = await api(`/api/seerr/requests/${requestId}/${action}`, { method: "POST" });
     say(r.action || "done", true);
-    /* Approving and fulfilling run the selection in the background, so the
-       lists are refreshed a moment later as well. */
+    /* Approving searches and grabs in the background, so the lists are
+       refreshed a moment later as well. */
     loadSeerrStatus();
     setTimeout(() => {
       loadSeerrRequests();
@@ -1968,22 +1998,22 @@ function renderSeerrRequests(containerSelector, payload, kind) {
         {},
         ...items.map((r) => {
           const status = el("span", { class: "result" });
-          /* Preview and Select & grab open the panel below and work the
-             request like the Select page. A pending request cannot be
-             selected until it is approved, so it offers "Approve & select"
-             instead of a plain Preview. */
+          /* Search and Grab open the panel below and work the request like the
+             Search page. Pickarr refuses to search a request that is still
+             pending, so a pending row offers Approve (approve and nothing
+             else) and Approve & grab instead. */
           const buttons =
             kind === "pending"
               ? [
                   el(
                     "button",
-                    { class: "small primary", onclick: () => seerrAction(r.id, "approve", status) },
+                    { class: "small", onclick: () => seerrAction(r.id, "approve", status) },
                     "Approve"
                   ),
                   el(
                     "button",
-                    { class: "small", onclick: () => openSeerrRequest(r) },
-                    "Approve & select"
+                    { class: "small primary", onclick: () => openSeerrRequest(r, { grab: true }) },
+                    "Approve & grab"
                   ),
                   el(
                     "button",
@@ -1998,20 +2028,17 @@ function renderSeerrRequests(containerSelector, payload, kind) {
                   ),
                 ]
               : [
+                  el("button", { class: "small", onclick: () => openSeerrRequest(r) }, "Search"),
                   el(
                     "button",
-                    { class: "small primary", onclick: () => openSeerrRequest(r) },
-                    "Preview"
-                  ),
-                  el(
-                    "button",
-                    { class: "small danger", onclick: () => openSeerrRequest(r, { grab: true }) },
-                    "Select & grab"
-                  ),
-                  el(
-                    "button",
-                    { class: "small", onclick: () => seerrAction(r.id, "fulfil", status) },
-                    "Fulfil now"
+                    {
+                      class: "small primary",
+                      onclick: () => {
+                        if (confirm("Search and grab the best release now?"))
+                          openSeerrRequest(r, { grab: true });
+                      },
+                    },
+                    "Grab"
                   ),
                 ];
           return el(
@@ -2034,8 +2061,8 @@ function renderSeerrRequests(containerSelector, payload, kind) {
 /* ------------------------------------------------------------------ */
 
 /* The request currently open in the panel: which one, what it resolved to,
-   and which instance the next Preview or grab applies to. Only one request
-   is open at a time. */
+   and which instance the next search or grab applies to. Only one request is
+   open at a time. */
 let seerrPanel = null;
 
 function seerrPanelStatus(message, ok) {
@@ -2138,22 +2165,27 @@ function renderSeerrTargets(payload) {
                             seasonNumber: s.season_number,
                           }),
                       },
-                      "Preview"
+                      "Search"
                     ),
                     " ",
                     el(
                       "button",
                       {
-                        class: "small danger",
+                        class: "small primary",
                         onclick: () => {
-                          if (!confirm(`Grab a pack for season ${s.season_number}?`)) return;
+                          if (
+                            !confirm(
+                              `Search and grab the best pack for season ${s.season_number} now?`
+                            )
+                          )
+                            return;
                           runSeerrSelection(true, {
                             instanceId: t.instance_id,
                             seasonNumber: s.season_number,
                           });
                         },
                       },
-                      "Select & grab"
+                      "Grab"
                     )
                   )
                 )
@@ -2199,7 +2231,7 @@ async function runSeerrSelection(grab, overrides) {
   if (opts.instanceId) seerrPanel.instanceId = opts.instanceId;
   const body = seerrSelectionBody(grab);
   if (opts.seasonNumber !== undefined) body.season_number = opts.seasonNumber;
-  seerrPanelStatus(grab ? "searching indexers and grabbing…" : "searching indexers…", true);
+  seerrPanelStatus(grab ? "searching and grabbing…" : "searching…", true);
   $("#seerr-request-result").replaceChildren();
   try {
     const payload = await api(`/api/seerr/requests/${seerrPanel.id}/select`, {
@@ -2223,8 +2255,8 @@ async function runSeerrSelection(grab, overrides) {
   }
 }
 
-/* Open the panel for one request: resolve it first (no search), then run the
-   selection straight away when the user asked for it. */
+/* Open the panel for one request: resolve it first (no search), then search
+   (and grab) straight away when the user asked for it. */
 async function openSeerrRequest(request, options) {
   const opts = options || {};
   const panel = $("#seerr-request-panel");
@@ -2232,6 +2264,13 @@ async function openSeerrRequest(request, options) {
   seerrPanel = { id: request.id, request: request, instanceId: null };
   panel.hidden = false;
   renderSeerrPanelHeader(request);
+  /* Working a pending request approves it in Seerr first, so say so on the
+     buttons rather than letting "Search" approve silently. */
+  const pending = request.status === 1;
+  const searchButton = $("#seerr-panel-search");
+  const grabButton = $("#seerr-panel-grab");
+  if (searchButton) searchButton.textContent = pending ? "Approve & search" : "Search";
+  if (grabButton) grabButton.textContent = pending ? "Approve & grab" : "Grab";
   $("#seerr-request-result").replaceChildren();
   const useAi = $("#seerr-use-ai");
   if (useAi && state.config && state.config.llm) useAi.checked = !!state.config.llm.enabled;
@@ -2335,9 +2374,9 @@ function wireSeerr() {
         const summary = await api("/api/seerr/run", { method: "POST" });
         setResult(
           "#seerr-run-result",
-          `${summary.approved} approved, ${summary.fulfilled} fulfilled in ${summary.duration_ms} ms${
-            summary.dry_run ? " (dry run)" : ""
-          }`,
+          `${summary.approved} approved, ${summary.fulfilled} ${
+            summary.dry_run ? "searched (dry run)" : "auto-grabbed"
+          } in ${summary.duration_ms} ms`,
           true
         );
         renderSeerrResults(summary.results || []);
@@ -2354,13 +2393,13 @@ function wireSeerr() {
   const close = $("#seerr-panel-close");
   if (close) close.addEventListener("click", closeSeerrPanel);
 
-  const preview = $("#seerr-panel-preview");
-  if (preview) preview.addEventListener("click", () => runSeerrSelection(false, {}));
+  const search = $("#seerr-panel-search");
+  if (search) search.addEventListener("click", () => runSeerrSelection(false, {}));
 
   const grab = $("#seerr-panel-grab");
   if (grab)
     grab.addEventListener("click", () => {
-      if (confirm("Tell the instance to grab the selected release?")) runSeerrSelection(true, {});
+      if (confirm("Search and grab the best release now?")) runSeerrSelection(true, {});
     });
 
   loadSeerrStatus();

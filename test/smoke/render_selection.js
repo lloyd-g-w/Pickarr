@@ -60,6 +60,15 @@ const fn = new Function(
 );
 const app = fn();
 
+/* Collect every button label a render produced, so the wording the owner sees
+   is asserted and not just "it did not throw". */
+function buttonLabels(node, found = []) {
+  if (!node || typeof node !== "object") return found;
+  if (node.tag === "button") found.push(node.textContent);
+  for (const child of node.children || []) buttonLabels(child, found);
+  return found;
+}
+
 function describe(node, depth = 0) {
   return node.textContent;
 }
@@ -92,8 +101,40 @@ for (const f of files) {
   tryRender(f.replace(/.*\//, ""), payload);
 }
 
-// Synthetic edge cases
-const base = JSON.parse(fs.readFileSync(files.find((f) => fs.existsSync(f)), "utf8"));
+/* Synthetic edge cases.  A real payload is used when one was passed in, so
+   the harness also runs on its own with no e2e output present. */
+const sample = {
+  media: { title: "Some Movie", year: 2024, media_kind: "movie", media_id: 77 },
+  selected: {
+    release: {
+      id: "r-winner",
+      title: "Some.Movie.2024.1080p.WEB-DL.x265-FLUX",
+      size_bytes: 6871947674,
+      quality: "WEBDL-1080p",
+      source: "WEB-DL",
+      codec: "x265",
+      release_group: "FLUX",
+      seeders: 44,
+      custom_format_score: 120,
+      indexer: "Fake",
+    },
+    score: 191.5,
+    components: [{ component: "preferred_codec", points: 15, detail: "x265 is preferred" }],
+  },
+  candidates: [],
+  rejected: [],
+  reason: "best match",
+  explanation: ["matches your preference for WEB-DL"],
+  conflicts: [],
+  method: { kind: "deterministic" },
+  llm: null,
+  grabbed: false,
+  grab_error: null,
+  duration_ms: 42,
+};
+sample.candidates = [sample.selected];
+const existing = files.find((f) => fs.existsSync(f));
+const base = existing ? JSON.parse(fs.readFileSync(existing, "utf8")) : sample;
 tryRender("selected:null + empty candidates", {
   ...base,
   selected: null,
@@ -117,5 +158,61 @@ tryRender("missing optional fields", {
   duration_ms: 1,
 });
 tryRender("grab_error present", { ...base, grabbed: false, grab_error: "HTTP 404: not in cache" });
+
+/* Wording and the grab affordances a search result must offer. */
+function check(label, fn) {
+  try {
+    fn();
+    console.log(`  PASS ${label}`);
+  } catch (e) {
+    failures++;
+    console.log(`  FAIL ${label}: ${e.message}`);
+  }
+}
+
+check("a search result offers Grab selected and Grab this", () => {
+  app.renderSelectionResult({ ...base, grabbed: false, grab_error: null });
+  const card = registry["#select-result"];
+  const labels = buttonLabels(card);
+  if (!labels.includes("Grab selected"))
+    throw new Error("no Grab selected button: " + JSON.stringify(labels));
+  if (!labels.includes("Grab this"))
+    throw new Error("no per-candidate Grab this button: " + JSON.stringify(labels));
+  const text = card.textContent;
+  if (!text.includes("not grabbed yet"))
+    throw new Error("a search result must say 'not grabbed yet': " + text.slice(0, 200));
+});
+
+check("a grabbed result says grabbed and offers Grab again", () => {
+  app.renderSelectionResult({ ...base, grabbed: true, grab_error: null });
+  const card = registry["#select-result"];
+  const labels = buttonLabels(card);
+  if (!labels.includes("Grab again"))
+    throw new Error("expected Grab again: " + JSON.stringify(labels));
+  const text = card.textContent;
+  if (text.includes("not grabbed"))
+    throw new Error("a grabbed result must not say 'not grabbed': " + text.slice(0, 200));
+});
+
+check("a failed grab keeps the failure wording", () => {
+  app.renderSelectionResult({
+    ...base,
+    grabbed: false,
+    grab_error: "HTTP 404: not in cache",
+  });
+  const text = registry["#select-result"].textContent;
+  if (!text.includes("Grab failed: HTTP 404: not in cache"))
+    throw new Error("missing grab failure line: " + text.slice(0, 200));
+  if (text.includes("not grabbed yet"))
+    throw new Error("a failed grab is not a plain search: " + text.slice(0, 200));
+});
+
+check("no old wording survives in a result card", () => {
+  app.renderSelectionResult({ ...base, grabbed: false, grab_error: null });
+  const labels = buttonLabels(registry["#select-result"]);
+  for (const gone of ["Preview", "Select & grab", "Grab"]) {
+    if (labels.includes(gone)) throw new Error(`stale label ${gone}: ${JSON.stringify(labels)}`);
+  }
+});
 
 process.exit(failures ? 1 : 0);

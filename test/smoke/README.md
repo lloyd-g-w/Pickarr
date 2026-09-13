@@ -78,7 +78,7 @@ per-episode search was needed, exactly one grab with a
 `{guid, indexerId, seriesId}` body, and that the pass summary and
 `/api/seerr/status` carry the per-season outcome the Requests tab shows.
 
-## Seerr: working a request like the Select page
+## Seerr: working a request like the Search page
 
 ```bash
 bash test/smoke/seerr_ux_e2e.sh
@@ -96,7 +96,8 @@ a non-pack release is refused with 409.
 ## UI
 
 ```bash
-# the Select page renders real payloads and awkward shapes without throwing
+# the Search page renders real payloads and awkward shapes without throwing
+# (runs standalone; pass a saved payload to render that instead)
 node test/smoke/render_selection.js /tmp/grabbug-last-preview-sonarr.json
 
 # the Requests tab's per-request panel renders (uses the payloads

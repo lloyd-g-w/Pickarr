@@ -551,3 +551,8 @@ ol.steps button {
 .request-panel-head h3 {
   margin: 0;
 }
+
+/* The grab action inside a search result card. */
+.grab-actions {
+  margin: 0.6rem 0 0.2rem;
+}

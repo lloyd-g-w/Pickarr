@@ -257,7 +257,7 @@ POST /api/seerr/test                     test the saved Seerr connection
 GET  /api/seerr/requests                 requests (?filter=pending|processing|..., ?take=)
 POST /api/seerr/requests/:id/approve     approve in Seerr, then fulfil
 POST /api/seerr/requests/:id/decline     decline in Seerr
-POST /api/seerr/requests/:id/fulfil      run a selection for that request now (background)
+POST /api/seerr/requests/:id/fulfil      search and grab for that request now (background; no UI button)
 POST /api/seerr/requests/:id/resolve     what the request maps to in Sonarr/Radarr (no search)
 POST /api/seerr/requests/:id/select      run the pipeline for the request, answering like /api/select
                                          body: {grab?, instruction?, use_ai?, instance_id?, season_number?, approve?}
@@ -269,6 +269,23 @@ POST /api/automatic/run                  trigger a scheduler pass now
 Persistence: `DATA_DIR` (default `/data`, fallback `./data`) with
 `config.json` and `history.jsonl`. Environment variables override the stored
 config on startup (`Config.apply_env`).
+
+### UI wording
+
+The route names keep the word *select*, but the UI says what the buttons do,
+because "preview"/"select" read as jargon:
+
+| UI | What it calls |
+|----|---------------|
+| the **Search** tab and its **Search** button | `POST /api/select/...` with `grab:false` |
+| **Grab** (searches and grabs in one press) | `POST /api/select/...` with `grab:true` |
+| **Grab selected** on a result card, **Grab this** on a candidate row | `POST /api/grab/...` with that release id |
+| **Approve** on a pending Seerr request | `POST /api/seerr/requests/:id/approve` |
+| **Approve & grab** / **Approve & search** | `POST /api/seerr/requests/:id/select` with `approve:true` |
+
+There is no *Fulfil now* button: it did what **Grab** does, so the UI offers
+only Grab. `POST /api/seerr/requests/:id/fulfil` still exists for scripts.
+A search result badge reads *not grabbed yet* until something is grabbed.
 
 ## Selection pipeline
 
@@ -335,7 +352,7 @@ must not depend on `Automatic`: `Automatic` depends on it):
 * `seasons_to_compact` renders the per-season outcome (pack / episodes /
   skipped) that the Requests tab displays.
 
-The Requests tab can also work a request by hand, the way the Select page
+The Requests tab can also work a request by hand, the way the Search page
 works a media id. `Seerr_sync.resolve_request` answers what the request maps
 to on each instance without searching (movie id, or series id plus the
 requested seasons with their missing/total counts), and
@@ -344,6 +361,6 @@ same payload the select routes return (`selection`, `series` or `selections`,
 plus the request and the instance used). A pending request is refused unless
 the body carries `approve: true`, in which case it is approved first and the
 *arr is given up to ~90s to add the item. Only a grab records the cooldown
-attempt, so previewing never starves the poller. The pure parts
+attempt, so searching never starves the poller. The pure parts
 (`select_body_of_json`, `pending_decision`, `nothing_reason`) are unit
 tested.

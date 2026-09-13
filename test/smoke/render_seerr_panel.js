@@ -140,7 +140,11 @@ check("tv request targets (per-season buttons)", () => {
   app.renderSeerrTargets(tvResolve);
   const text = registry["#seerr-panel-targets"].textContent;
   if (!text.includes("Season 2")) throw new Error("no season row rendered: " + text);
-  if (!text.includes("Select & grab")) throw new Error("no per-season grab button");
+  for (const label of ["Search", "Grab"]) {
+    if (!text.includes(label)) throw new Error(`no per-season ${label} button: ${text}`);
+  }
+  if (text.includes("Preview") || text.includes("Select & grab"))
+    throw new Error("old wording still present: " + text);
 });
 check("nothing resolved yet", () =>
   app.renderSeerrTargets({
@@ -183,23 +187,28 @@ check("episode-fallback payload", () =>
   })
 );
 
-check("request rows offer preview and grab", () => {
+check("request rows offer search and grab", () => {
   app.renderSeerrRequests("#seerr-processing", { results: [movieResolve.request] }, "processing");
   const text = registry["#seerr-processing"].textContent;
-  for (const label of ["Preview", "Select & grab", "Fulfil now"]) {
+  for (const label of ["Search", "Grab"]) {
     if (!text.includes(label)) throw new Error(`missing ${label}: ${text}`);
   }
+  /* "Fulfil now" meant nothing to the user and did what Grab does. */
+  for (const gone of ["Fulfil", "Preview", "Select & grab"]) {
+    if (text.includes(gone)) throw new Error(`${gone} should be gone: ${text}`);
+  }
 });
-check("pending rows offer approve & select", () => {
+check("pending rows offer approve, approve & grab, decline", () => {
   app.renderSeerrRequests(
     "#seerr-pending",
     { results: [Object.assign({}, movieResolve.request, { status: 1, status_label: "pending" })] },
     "pending"
   );
   const text = registry["#seerr-pending"].textContent;
-  for (const label of ["Approve", "Approve & select", "Decline"]) {
+  for (const label of ["Approve", "Approve & grab", "Decline"]) {
     if (!text.includes(label)) throw new Error(`missing ${label}: ${text}`);
   }
+  if (text.includes("Approve & select")) throw new Error("old wording still present: " + text);
 });
 
 check("a season pack is grabbed through the season route", () => {

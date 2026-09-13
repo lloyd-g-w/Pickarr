@@ -361,7 +361,7 @@ let fulfil_request (state : App_state.t) (cfg : Config.t) ?(title : Seerr.title 
                   (fun ((inst : Config.instance), target) ->
                     if Fulfil.target_items target = 0 then Lwt.return ([], [])
                     else (
-                      Log_buffer.infof "seerr: %s: fulfilling %s with %s" inst.inst_name
+                      Log_buffer.infof "seerr: %s: searching for %s with %s" inst.inst_name
                         (label ?title r) (Fulfil.target_to_string target);
                       fulfil_on_instance state cfg inst target))
                   found
@@ -458,7 +458,7 @@ let process_approved (state : App_state.t) (cfg : Config.t) (cache : title_cache
         plan ~now ~cooldown_seconds:attempt_cooldown_seconds ~attempted
           ~limit:s.seerr_max_requests_per_run requests
       in
-      Log_buffer.infof "seerr: %d approved request(s), %d to fulfil, %d skipped%s"
+      Log_buffer.infof "seerr: %d approved request(s), %d to search for, %d skipped%s"
         (List.length requests) (List.length chosen) (List.length skipped)
         (if s.seerr_grab then "" else " (dry run: grabbing disabled)");
       let* results =

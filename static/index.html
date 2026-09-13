@@ -12,7 +12,7 @@
       <p class="tagline">AI-assisted release selection for Sonarr and Radarr</p>
       <nav id="tabs">
         <button data-tab="dashboard" class="active">Dashboard</button>
-        <button data-tab="select">Select</button>
+        <button data-tab="select">Search</button>
         <button data-tab="requests">Requests</button>
         <button data-tab="rules">Rules &amp; Preferences</button>
         <button data-tab="instances">Instances</button>
@@ -56,13 +56,14 @@
 
       <!-- ---------------------------------------------------------- -->
       <section id="tab-select" class="tab">
-        <h2>Run a selection</h2>
+        <h2>Search for a release</h2>
         <p class="hint">
-          Pickarr asks the instance for the releases available for one movie or
-          episode, applies your hard rules, scores what is left and (when AI is
-          enabled) asks the model to pick the winner. Nothing is grabbed unless
-          you press <em>Select &amp; grab</em> or the <em>Grab</em> button on a
-          candidate row. Searching the indexers can take several seconds.
+          Search for the best release, then grab it &mdash; or grab any candidate
+          from the list. <em>Search</em> asks the instance for the available
+          releases, applies your hard rules, scores what is left and (when AI is
+          enabled) asks the model to pick the winner; nothing is grabbed until
+          you press a <em>Grab</em> button. Searching the indexers can take
+          several seconds.
         </p>
 
         <div class="row">
@@ -133,7 +134,7 @@
 
         <label class="block">
           Temporary instruction
-          <span class="hint-inline">applies only to this selection and is not saved</span>
+          <span class="hint-inline">applies only to this search and is not saved</span>
           <textarea
             id="select-instruction"
             rows="3"
@@ -143,8 +144,8 @@
 
         <p>
           <label class="inline"><input id="select-use-ai" type="checkbox" checked /> Use AI</label>
-          <button id="btn-preview">Preview</button>
-          <button id="btn-grab" class="danger">Select &amp; grab</button>
+          <button id="btn-search">Search</button>
+          <button id="btn-grab" class="primary">Grab</button>
           <span id="select-status" class="result"></span>
         </p>
 
@@ -349,7 +350,10 @@
           Pickarr watches the request queue of Seerr, Overseerr or Jellyseerr.
           Seerr keeps owning requests, approvals and adding the movie or series
           to Sonarr/Radarr; Pickarr only decides which release is grabbed.
-          Approving here approves in Seerr and starts a selection immediately.
+          <em>Search</em> shows what Pickarr would pick for a request,
+          <em>Grab</em> takes the winner. <em>Approve</em> approves in Seerr and
+          nothing else; <em>Approve &amp; grab</em> approves and grabs straight
+          away.
         </p>
 
         <h3>Connection</h3>
@@ -375,9 +379,9 @@
         <h3>Approved, waiting for a release</h3>
         <div id="seerr-processing">Loading…</div>
 
-        <!-- Opened by Preview / Select & grab on a request row: the same
-             ranking, explanation and per-candidate Grab buttons as the
-             Select page, for the media the request resolved to. -->
+        <!-- Opened by Search / Grab on a request row: the same ranking,
+             explanation and per-candidate Grab buttons as the Search page,
+             for the media the request resolved to. -->
         <section id="seerr-request-panel" class="request-panel" hidden>
           <div class="request-panel-head">
             <h3 id="seerr-panel-title">Request</h3>
@@ -389,7 +393,7 @@
           <div id="seerr-panel-targets">Resolving…</div>
 
           <label class="block">
-            Instruction for this selection
+            Instruction for this search
             <span class="hint-inline">applies only to this run and is not saved</span>
             <textarea
               id="seerr-instruction"
@@ -399,8 +403,8 @@
           </label>
           <p>
             <label class="inline"><input id="seerr-use-ai" type="checkbox" /> Use AI</label>
-            <button id="seerr-panel-preview" class="primary">Preview</button>
-            <button id="seerr-panel-grab" class="danger">Select &amp; grab</button>
+            <button id="seerr-panel-search">Search</button>
+            <button id="seerr-panel-grab" class="primary">Grab</button>
             <span id="seerr-select-status" class="result"></span>
           </p>
           <div id="seerr-request-result"></div>

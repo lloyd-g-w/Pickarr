@@ -84,6 +84,38 @@ let plan ~(now : float) ~(cooldown_seconds : float)
   else go [] [] limit wanted
 
 (* ------------------------------------------------------------------ *)
+(* Season grouping (unit tested)                                       *)
+(* ------------------------------------------------------------------ *)
+
+(** The (series, season) an episode belongs to, when both are known. *)
+let season_key (m : Types.media) : (int * int) option =
+  if m.media_kind <> "episode" then None
+  else
+    match (List.assoc_opt "series_id" m.extra, m.season_number) with
+    | Some (`Int series_id), Some season_number -> Some (series_id, season_number)
+    | _ -> None
+
+(** Group wanted episodes by (series id, season number), preserving the order
+    in which the seasons were first seen.  Episodes whose series or season is
+    unknown (and anything that is not an episode) are returned separately and
+    handled one by one. *)
+let group_by_season (media : Types.media list) :
+    ((int * int) * Types.media list) list * Types.media list =
+  let keys =
+    List.fold_left
+      (fun acc m ->
+        match season_key m with
+        | Some key when not (List.mem key acc) -> key :: acc
+        | _ -> acc)
+      [] media
+    |> List.rev
+  in
+  let groups =
+    List.map (fun key -> (key, List.filter (fun m -> season_key m = Some key) media)) keys
+  in
+  (groups, List.filter (fun m -> season_key m = None) media)
+
+(* ------------------------------------------------------------------ *)
 (* Scheduler state helpers                                             *)
 (* ------------------------------------------------------------------ *)
 
@@ -174,6 +206,105 @@ let fetch_wanted state (inst : Config.instance) (a : Config.automatic) ~page_siz
             | Error e -> Error e)
           (fetch `Cutoff)
 
+(* One series overview per pass and per series: a season decision needs the
+   whole-season episode counts, which the wanted list does not carry. *)
+let season_summary_lookup state (inst : Config.instance) =
+  let cache : (int, Client.season_summary list) Hashtbl.t = Hashtbl.create 8 in
+  let client = App_state.client state inst in
+  fun ~(series_id : int) ~(season_number : int) ->
+    let find summaries =
+      List.find_opt
+        (fun (s : Client.season_summary) -> s.season_number = season_number)
+        summaries
+    in
+    match Hashtbl.find_opt cache series_id with
+    | Some summaries -> Lwt.return (find summaries)
+    | None -> (
+        let* overview = Client.fetch_series_overview client series_id in
+        match overview with
+        | Error e ->
+            Log_buffer.warnf
+              "automatic: %s: could not read the seasons of series %d (%s); \
+               falling back to single episodes"
+              inst.inst_name series_id (Client.error_to_string e);
+            Hashtbl.replace cache series_id [];
+            Lwt.return None
+        | Ok (_series, summaries) ->
+            Hashtbl.replace cache series_id summaries;
+            Lwt.return (find summaries))
+
+(* Run the chosen items.  Sonarr episodes of the same season are collapsed
+   into a single season-pack selection when the configured policy asks for
+   it; everything else is processed one item at a time. *)
+let process_chosen state (inst : Config.instance) (a : Config.automatic)
+    ~(opts : Selection.options) ~(run_one : Types.media -> Yojson.Safe.t Lwt.t)
+    (chosen : Types.media list) : Yojson.Safe.t list Lwt.t =
+  let cfg = App_state.config state in
+  let policy = cfg.Config.seasons in
+  if inst.inst_app <> Types.Sonarr || not policy.prefer_packs then
+    Lwt_list.map_s run_one chosen
+  else
+    let groups, ungrouped = group_by_season chosen in
+    let season_summary = season_summary_lookup state inst in
+    let* grouped_results =
+      Lwt_list.map_s
+        (fun ((series_id, season_number), (items : Types.media list)) ->
+          let* summary = season_summary ~series_id ~season_number in
+          let plan =
+            match summary with
+            | None -> Selection.Plan_episodes
+            | Some s ->
+                Selection.season_plan policy
+                  ~missing:(List.length s.missing_episode_ids)
+                  ~total:s.total_episodes
+          in
+          match (plan, summary) with
+          | Selection.Plan_pack, Some s ->
+              (* The whole season is attempted as one item; every missing
+                 episode enters the cooldown so the next pass leaves the
+                 season alone. *)
+              List.iter
+                (record_attempt state.App_state.scheduler inst.inst_id)
+                s.missing_episode_ids;
+              Log_buffer.infof
+                "automatic: %s: series %d season %d: %d/%d missing -> one season pack"
+                inst.inst_name series_id season_number
+                (List.length s.missing_episode_ids) s.total_episodes;
+              let* r =
+                Selection.run_season ~grab_allowed:(should_grab a) state inst ~series_id
+                  ~season_number opts
+              in
+              (match r with
+              | Ok result ->
+                  (match result.selected with
+                  | None ->
+                      Log_buffer.infof
+                        "automatic: %s: no usable season pack for %s" inst.inst_name
+                        (Store.media_label result.media)
+                  | Some sel ->
+                      Log_buffer.infof "automatic: %s: %s %s for %s" inst.inst_name
+                        (if result.grabbed then "grabbed" else "would grab")
+                        sel.scored.title
+                        (Store.media_label result.media));
+                  (* No pack survived the rules: fall back to the episodes
+                     this pass had picked, as a manual run would. *)
+                  if result.selected = None && policy.fallback_to_episodes then
+                    let* per_episode = Lwt_list.map_s run_one items in
+                    Lwt.return (summary_of_result ~instance:inst result :: per_episode)
+                  else Lwt.return [ summary_of_result ~instance:inst result ]
+              | Error e ->
+                  let msg = Selection.error_to_string e in
+                  Log_buffer.warnf "automatic: %s: %s" inst.inst_name msg;
+                  if policy.fallback_to_episodes then
+                    let* per_episode = Lwt_list.map_s run_one items in
+                    Lwt.return (summary_of_error ~instance:inst msg :: per_episode)
+                  else Lwt.return [ summary_of_error ~instance:inst msg ])
+          | _ -> Lwt_list.map_s run_one items)
+        groups
+    in
+    let* ungrouped_results = Lwt_list.map_s run_one ungrouped in
+    Lwt.return (List.concat grouped_results @ ungrouped_results)
+
 let process_instance state (inst : Config.instance) (a : Config.automatic) =
   let client = App_state.client state inst in
   let* queue = Client.queue_media_ids client in
@@ -218,40 +349,33 @@ let process_instance state (inst : Config.instance) (a : Config.automatic) =
                 inst.inst_name (List.length wanted) (List.length chosen)
                 (List.length skipped)
                 (if a.auto_grab then "" else " (dry run: grabbing disabled)");
-              let* results =
-                Lwt_list.map_s
-                  (fun (m : Types.media) ->
-                    record_attempt state.App_state.scheduler inst.inst_id m.media_id;
-                    let opts =
-                      {
-                        Selection.grab = a.auto_grab;
-                        instruction = None;
-                        use_ai = None;
-                      }
-                    in
-                    let* r =
-                      Selection.run ~grab_allowed:(should_grab a) state inst
-                        ~media_id:m.media_id opts
-                    in
-                    match r with
-                    | Ok result ->
-                        (match result.selected with
-                        | None ->
-                            Log_buffer.infof "automatic: %s: no usable release for %s"
-                              inst.inst_name (Store.media_label result.media)
-                        | Some s ->
-                            Log_buffer.infof "automatic: %s: %s %s for %s"
-                              inst.inst_name
-                              (if result.grabbed then "grabbed" else "would grab")
-                              s.scored.title
-                              (Store.media_label result.media));
-                        Lwt.return (summary_of_result ~instance:inst result)
-                    | Error e ->
-                        let msg = Selection.error_to_string e in
-                        Log_buffer.warnf "automatic: %s: %s" inst.inst_name msg;
-                        Lwt.return (summary_of_error ~instance:inst msg))
-                  chosen
+              let opts =
+                { Selection.grab = a.auto_grab; instruction = None; use_ai = None }
               in
+              let run_one (m : Types.media) =
+                record_attempt state.App_state.scheduler inst.inst_id m.media_id;
+                let* r =
+                  Selection.run ~grab_allowed:(should_grab a) state inst
+                    ~media_id:m.media_id opts
+                in
+                match r with
+                | Ok result ->
+                    (match result.selected with
+                    | None ->
+                        Log_buffer.infof "automatic: %s: no usable release for %s"
+                          inst.inst_name (Store.media_label result.media)
+                    | Some s ->
+                        Log_buffer.infof "automatic: %s: %s %s for %s" inst.inst_name
+                          (if result.grabbed then "grabbed" else "would grab")
+                          s.scored.title
+                          (Store.media_label result.media));
+                    Lwt.return (summary_of_result ~instance:inst result)
+                | Error e ->
+                    let msg = Selection.error_to_string e in
+                    Log_buffer.warnf "automatic: %s: %s" inst.inst_name msg;
+                    Lwt.return (summary_of_error ~instance:inst msg)
+              in
+              let* results = process_chosen state inst a ~opts ~run_one chosen in
               forget_stale_attempts state.App_state.scheduler ~now ~cooldown;
               Lwt.return
                 (results @ List.map (fun (m, r) -> summary_of_skip ~instance:inst m r) skipped)))

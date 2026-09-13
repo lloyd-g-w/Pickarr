@@ -24,6 +24,10 @@ type llm_fn =
     - Any LLM or validation failure yields
       {!Types.By_deterministic_fallback} and the top deterministic
       candidate.
+    - When [media.media_kind = "season"] the candidates are restricted to
+      season packs for that season ({!Filter.season_pack_partition}) before
+      the hard rules run; the discarded single episodes appear in
+      [rejected].
     - When no candidate survives the hard rules, [selected] is [None] and
       [reason] explains why. *)
 val run :

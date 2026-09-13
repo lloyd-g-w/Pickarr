@@ -65,8 +65,12 @@ let run ~(config : Config.t) ~(instance : Config.instance option)
         duration_ms;
       }
   in
-  (* Stage 2: hard rules. *)
-  let valid, rejected = Filter.partition config.Config.hard_rules releases in
+  (* Stage 2: hard rules.  For a season selection the pack requirement comes
+     first, so that single episodes returned by Sonarr's season search are
+     reported as rejected instead of competing with the packs. *)
+  let packs, not_packs = Filter.season_pack_partition media releases in
+  let valid, rejected = Filter.partition config.Config.hard_rules packs in
+  let rejected = not_packs @ rejected in
   (* Stage 3: deterministic scoring. *)
   let ranked =
     Scoring.rank config.Config.preferences config.Config.weights media valid

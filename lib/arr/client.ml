@@ -81,6 +81,129 @@ let fetch_media t id =
           Lwt.return (Ok (Mapping.media_of_movie ~tags ?profile_name m)))
 
 (* ------------------------------------------------------------------ *)
+(* Seasons and whole series (Sonarr only)                              *)
+(* ------------------------------------------------------------------ *)
+
+type season_summary = {
+  season_number : int;
+  monitored : bool;  (** Any monitored episode in the season. *)
+  total_episodes : int;
+  missing_episode_ids : int list;  (** Monitored episodes without a file. *)
+  existing_quality : string option;  (** Quality of the first file on disk. *)
+}
+
+let season_summary_to_yojson (s : season_summary) : Yojson.Safe.t =
+  `Assoc
+    [
+      ("season_number", `Int s.season_number);
+      ("monitored", `Bool s.monitored);
+      ("total_episodes", `Int s.total_episodes);
+      ("missing_episodes", `Int (List.length s.missing_episode_ids));
+      ("missing_episode_ids", `List (List.map (fun i -> `Int i) s.missing_episode_ids));
+      ("existing_quality", T.opt_str s.existing_quality);
+    ]
+
+(* Sonarr numbers specials as season 0.  They are not what "give me the
+   season" means, so they are dropped unless the series has nothing else. *)
+let drop_specials (seasons : season_summary list) =
+  match List.filter (fun s -> s.season_number > 0) seasons with
+  | [] -> seasons
+  | regular -> regular
+
+let summarise_seasons (episodes : Sonarr.episode_resource list) : season_summary list =
+  let numbers =
+    List.sort_uniq compare
+      (List.map (fun (e : Sonarr.episode_resource) -> e.Sonarr.er_season_number) episodes)
+  in
+  List.map
+    (fun n ->
+      let of_season =
+        List.filter (fun (e : Sonarr.episode_resource) -> e.Sonarr.er_season_number = n) episodes
+      in
+      {
+        season_number = n;
+        monitored = List.exists (fun (e : Sonarr.episode_resource) -> e.Sonarr.er_monitored) of_season;
+        total_episodes = List.length of_season;
+        missing_episode_ids =
+          List.filter_map
+            (fun (e : Sonarr.episode_resource) ->
+              if Mapping.is_missing e then Some e.Sonarr.er_id else None)
+            of_season;
+        existing_quality = Mapping.first_existing_quality of_season;
+      })
+    numbers
+  |> drop_specials
+
+(* Series title, tags and profile name, shared by the season/series helpers. *)
+let series_context t series_id =
+  let base_url = base t and api_key = key t in
+  let* series = Sonarr.series ~base_url ~api_key series_id in
+  match series with
+  | Error e -> Lwt.return (Error e)
+  | Ok series ->
+      let* tags = best_effort (fun () -> Sonarr.tags ~base_url ~api_key ()) in
+      let* profile =
+        match series.Sonarr.sr_quality_profile_id with
+        | None -> Lwt.return None
+        | Some pid -> best_effort (fun () -> Sonarr.quality_profile ~base_url ~api_key pid)
+      in
+      Lwt.return
+        (Ok
+           ( series,
+             Option.value tags ~default:[],
+             Option.bind profile (fun p -> p.Resources.qp_name) ))
+
+let sonarr_only ~(what : string) t =
+  Http.Json
+    (Printf.sprintf "%s is only available for Sonarr instances (%s is a %s instance)" what
+       (instance t).C.inst_name
+       (T.app_to_string (app t)))
+
+let fetch_series_overview t series_id =
+  let base_url = base t and api_key = key t in
+  match app t with
+  | T.Radarr -> Lwt.return (Error (sonarr_only ~what:"A series overview" t))
+  | T.Sonarr -> (
+      let* ctx = series_context t series_id in
+      match ctx with
+      | Error e -> Lwt.return (Error e)
+      | Ok (series, tags, profile_name) -> (
+          let* episodes = Sonarr.episodes_of_series ~base_url ~api_key series_id in
+          match episodes with
+          | Error e -> Lwt.return (Error e)
+          | Ok episodes ->
+              let media =
+                Mapping.media_of_series ~tags ?profile_name episodes series
+              in
+              Lwt.return (Ok (media, summarise_seasons episodes))))
+
+let season_media t ~series_id ~season_number =
+  let base_url = base t and api_key = key t in
+  match app t with
+  | T.Radarr -> Lwt.return (Error (sonarr_only ~what:"A season selection" t))
+  | T.Sonarr -> (
+      let* ctx = series_context t series_id in
+      match ctx with
+      | Error e -> Lwt.return (Error e)
+      | Ok (series, tags, profile_name) -> (
+          let* episodes =
+            Sonarr.episodes_of_series ~base_url ~api_key ~season:season_number series_id
+          in
+          match episodes with
+          | Error e -> Lwt.return (Error e)
+          | Ok episodes ->
+              (* Sonarr ignores an unknown seasonNumber rather than failing,
+                 so filter again to be sure we describe one season. *)
+              let episodes =
+                List.filter
+                  (fun (e : Sonarr.episode_resource) ->
+                    e.Sonarr.er_season_number = season_number)
+                  episodes
+              in
+              Lwt.return
+                (Ok (Mapping.media_of_season ~tags ?profile_name ~season_number episodes series))))
+
+(* ------------------------------------------------------------------ *)
 (* Releases                                                            *)
 (* ------------------------------------------------------------------ *)
 
@@ -90,6 +213,14 @@ let series_id_of_media (media : T.media) =
 let search_releases t (media : T.media) =
   let base_url = base t and api_key = key t in
   match app t with
+  | T.Sonarr when media.T.media_kind = "series" ->
+      (* [GET /api/v3/release?seriesId=] without a seasonNumber does not
+         search the series (docs/API_RESEARCH.md §2.1); a whole series is
+         selected one season at a time instead. *)
+      Lwt.return
+        (Error
+           (Http.Json
+              "Sonarr cannot search a whole series at once; run the selection per season"))
   | T.Sonarr -> (
       let season_search =
         match (media.T.media_kind, series_id_of_media media, media.T.season_number) with

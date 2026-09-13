@@ -366,6 +366,81 @@ let media_id_param request name =
         (Printf.sprintf "\"%s\" must be a positive integer" (Dream.param request name))
 
 (* ------------------------------------------------------------------ *)
+(* Seasons and whole series (Sonarr)                                   *)
+(* ------------------------------------------------------------------ *)
+
+(* Season 0 (specials) is a legitimate request, so only negative numbers are
+   rejected here. *)
+let season_number_param request name =
+  match int_of_string_opt (Dream.param request name) with
+  | Some n when n >= 0 -> Ok n
+  | _ ->
+      Error
+        (Printf.sprintf "\"%s\" must be a season number (0 or greater)"
+           (Dream.param request name))
+
+(* Like [run_selection], but for a whole-series run, which answers with one
+   outcome per season instead of a single selection. *)
+let run_series_selection request
+    (resolve :
+      Selection.options -> seasons:int list -> (Selection.series_result, Selection.error) result Lwt.t)
+    =
+  let* body = json_body request in
+  match body with
+  | Error e -> error_json `Bad_Request e
+  | Ok body -> (
+      match
+        ( Selection.options_of_json ?grab_query:(Dream.query request "grab") body,
+          Selection.seasons_of_json body )
+      with
+      | Error e, _ | _, Error e -> error_json `Bad_Request e
+      | Ok opts, Ok seasons -> (
+          let* result = resolve opts ~seasons in
+          match result with
+          | Error e -> selection_error_response e
+          | Ok result -> respond_json (Selection.series_result_to_yojson result)))
+
+let select_season_on_default (state : App_state.t) request =
+  match (media_id_param request "series_id", season_number_param request "season_number") with
+  | Error e, _ | _, Error e -> error_json `Bad_Request e
+  | Ok series_id, Ok season_number ->
+      run_selection request (fun opts ->
+          Selection.run_season_on_default state ~series_id ~season_number opts)
+
+let select_season_on_instance (state : App_state.t) request =
+  match (media_id_param request "series_id", season_number_param request "season_number") with
+  | Error e, _ | _, Error e -> error_json `Bad_Request e
+  | Ok series_id, Ok season_number ->
+      let instance_id = Dream.param request "instance_id" in
+      run_selection request (fun opts ->
+          Selection.run_season_on_instance_id state ~instance_id ~series_id ~season_number opts)
+
+let select_series_on_default (state : App_state.t) request =
+  match media_id_param request "series_id" with
+  | Error e -> error_json `Bad_Request e
+  | Ok series_id ->
+      run_series_selection request (fun opts ~seasons ->
+          Selection.run_series_on_default state ~series_id ~seasons opts)
+
+let select_series_on_instance (state : App_state.t) request =
+  match media_id_param request "series_id" with
+  | Error e -> error_json `Bad_Request e
+  | Ok series_id ->
+      let instance_id = Dream.param request "instance_id" in
+      run_series_selection request (fun opts ~seasons ->
+          Selection.run_series_on_instance_id state ~instance_id ~series_id ~seasons opts)
+
+let get_series_overview (state : App_state.t) request =
+  match media_id_param request "series_id" with
+  | Error e -> error_json `Bad_Request e
+  | Ok series_id -> (
+      let instance_id = Dream.param request "instance_id" in
+      let* overview = Selection.series_overview state ~instance_id ~series_id in
+      match overview with
+      | Error e -> selection_error_response e
+      | Ok json -> respond_json json)
+
+(* ------------------------------------------------------------------ *)
 (* Handlers                                                            *)
 (* ------------------------------------------------------------------ *)
 
@@ -725,6 +800,24 @@ let router (state : App_state.t) =
                  | Ok media_id ->
                      run_selection request (fun opts ->
                          Selection.run_on_default state ~app:Types.Sonarr ~media_id opts)));
+          (* Seasons and whole series: registered before the generic
+             /select/:instance_id/:media_id route so that the literal
+             "season"/"series" segments always win. *)
+          Dream.post "/select/sonarr/season/:series_id/:season_number"
+            (guard "POST /api/select/sonarr/season/:series_id/:season_number"
+               (select_season_on_default state));
+          Dream.post "/select/sonarr/series/:series_id"
+            (guard "POST /api/select/sonarr/series/:series_id"
+               (select_series_on_default state));
+          Dream.post "/select/:instance_id/season/:series_id/:season_number"
+            (guard "POST /api/select/:instance_id/season/:series_id/:season_number"
+               (select_season_on_instance state));
+          Dream.post "/select/:instance_id/series/:series_id"
+            (guard "POST /api/select/:instance_id/series/:series_id"
+               (select_series_on_instance state));
+          Dream.get "/series/:instance_id/:series_id"
+            (guard "GET /api/series/:instance_id/:series_id"
+               (get_series_overview state));
           Dream.post "/select/:instance_id/:media_id"
             (guard "POST /api/select/:instance_id/:media_id" (fun request ->
                  match media_id_param request "media_id" with

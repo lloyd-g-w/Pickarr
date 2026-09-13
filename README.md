@@ -217,7 +217,7 @@ the media normally: it flips to available once the download is imported.
 | 1. Retrieve | `GET /api/v3/release?episodeId=…`, `?seriesId=…&seasonNumber=…` (season packs) or `?movieId=…`, mapped into an internal `release` type (title, size, seeders, quality, source, codec, audio, HDR/DV, group, languages, custom formats, and Sonarr/Radarr's own rejections) |
 | 2. Hard filtering | Deterministic OCaml rules. Every rejection carries a structured reason. The LLM never sees rejected releases and can never overturn a rejection |
 | 3. Deterministic scoring | Pure, weighted, unit-tested scoring of the survivors |
-| 4. AI ranking (optional) | The top N candidates plus your preferences go to an OpenAI-compatible `/chat/completions` endpoint, which must answer with strict JSON. The answer is validated (selected id exists, ranking ids exist, no duplicates, scores in range); anything invalid falls back to stage 3 |
+| 4. AI ranking (optional) | The top N candidates plus your preferences go to an OpenAI-compatible `/chat/completions` endpoint, which must answer with strict JSON. The pick is validated against the candidates that were sent; a pick Pickarr cannot resolve falls back to stage 3 (see [what the model sees](#what-the-model-sees)) |
 | 5. Grab | `POST /api/v3/release` with the chosen `guid` + `indexerId`, only when you asked for it |
 
 ### Priority order
@@ -237,6 +237,49 @@ list, AV1 is still rejected — and the UI tells you so:
 ```
 You said you prefer AV1, but AV1 is blocked by a hard codec rule.
 ```
+
+### What the model sees
+
+Candidates are presented to the model with **short ids** — `r1`, `r2`, `r3` —
+and nothing else identifies them: no guid, download URL, magnet link or info
+hash. A torrent guid is frequently a magnet link of several hundred
+characters, and models (small local ones especially) truncate or re-encode
+them, which used to make the whole answer unusable:
+
+```
+AI unavailable, used deterministic scoring: invalid response:
+ranking contains unknown release id "magnet:?xt=urn:btih:C3A8…"
+```
+
+Pickarr translates the short ids back to the real releases itself, so that
+cannot happen any more. The prompt is also compact: absent fields are
+omitted, each candidate carries its `deterministic_score` and
+`deterministic_rank`, and the model is asked to rank at most five candidates
+with one-sentence reasons.
+
+The answer is then read leniently, because only one thing actually matters:
+
+* **`selected_id` must resolve to a candidate.** It is matched ignoring case,
+  spaces, quotes, backticks, `**bold**` and trailing punctuation, and `#2`,
+  `candidate 2`, `2` and the release's exact title all resolve to `r2`. If it
+  still cannot be resolved, Pickarr falls back to deterministic scoring — the
+  model can never cause a release outside the candidate list, or one rejected
+  by a hard rule, to be grabbed.
+* **Everything else is advisory** and is repaired rather than thrown away: a
+  ranking entry with an unusable id is dropped, a repeated id keeps its first
+  entry, scores outside 0–100 are clamped, a missing score falls back to the
+  entry's position, a missing ranking becomes the pick alone, and a
+  confidence of `85` is read as `0.85`.
+
+Every repair is shown with the result, so a sloppy model is visible instead
+of silent:
+
+```
+AI response note: a ranking entry named an unknown release ("magnet:?xt=…") and was dropped
+```
+
+If the server stops mid-answer (`finish_reason=length`), Pickarr says so and
+suggests raising `max_tokens` instead of reporting a confusing parse error.
 
 **Overriding Sonarr/Radarr's own rejections.** Level 1 is a switch: the hard
 rule *Respect Sonarr/Radarr rejections* (on by default). Turn it off and their
@@ -665,6 +708,8 @@ specifications and source, not guessed; see
   than RSS sync. Webhooks narrow the gap for newly added items.
 * One LLM call per selection. With large candidate lists, keep
   `max_candidates` modest for small local models.
+* The model is asked for at most five ranked candidates, so the candidate
+  order below the top five stays the deterministic one.
 * Optional numeric limits are cleared from the UI by emptying the field; in
   `config.json` they are `null`.
 * Usenet is supported (Pickarr passes whatever Sonarr/Radarr returns), but

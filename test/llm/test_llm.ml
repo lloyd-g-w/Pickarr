@@ -61,6 +61,13 @@ let test_parse_completion () =
    with
   | Ok c -> str "legacy content" "legacy" c
   | Error m -> Alcotest.failf "should have parsed: %s" m);
+  (* finish_reason=length means the answer was cut off: parsing it would
+     produce a confusing "not JSON" error instead of a usable hint. *)
+  let contains ~needle haystack =
+    let n = String.length needle and h = String.length haystack in
+    let rec go i = i + n <= h && (String.sub haystack i n = needle || go (i + 1)) in
+    n > 0 && go 0
+  in
   (match
      Client.parse_completion
        (Yojson.Safe.from_string
@@ -69,8 +76,25 @@ let test_parse_completion () =
   | Ok _ -> Alcotest.fail "truncated output must fail"
   | Error m ->
       Alcotest.(check bool)
-        "mentions truncation" true
-        (String.length m > 0 && String.contains m 'c'));
+        "names the cause and the remedy" true
+        (contains ~needle:"finish_reason=length" m
+        && contains ~needle:"max_tokens" m));
+  (* Even when the truncated text happens to parse, it is not trustworthy. *)
+  (match
+     Client.parse_completion
+       (Yojson.Safe.from_string
+          {|{"choices":[{"index":0,"message":{"content":"{\"selected_id\":\"r1\"}"},"finish_reason":"length"}]}|})
+   with
+  | Ok _ -> Alcotest.fail "a cut-off answer must never be used"
+  | Error _ -> ());
+  (* A normal stop is unaffected. *)
+  (match
+     Client.parse_completion
+       (Yojson.Safe.from_string
+          {|{"choices":[{"index":0,"message":{"content":"ok"},"finish_reason":"stop"}]}|})
+   with
+  | Ok c -> str "finish_reason stop" "ok" c
+  | Error m -> Alcotest.failf "stop must parse: %s" m);
   (match Client.parse_completion (Yojson.Safe.from_string {|{"choices":[]}|}) with
   | Ok _ -> Alcotest.fail "empty choices must fail"
   | Error _ -> ());

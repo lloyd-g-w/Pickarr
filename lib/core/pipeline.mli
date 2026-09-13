@@ -18,9 +18,16 @@ type llm_fn =
       is [true] {i and} [llm] was provided.
     - [instruction] is a temporary natural-language instruction for this
       selection only; it is not persisted.
+    - The model sees short candidate ids ([r1], [r2], ...) rather than real
+      release ids, which are often magnet links ({!Prompt.build_with_ids});
+      its answer is translated back, so {!Types.llm_decision} always holds
+      real ids.  A candidate's title is also accepted as an id.
     - When the model answers with a valid decision the candidates are
       re-ordered to follow its ranking (the selected release first, then the
       ranked ones, then the unranked ones in deterministic order).
+    - Whatever had to be repaired in the model's answer
+      ({!Llm_response.parse_with_warnings}) is appended to [explanation] as
+      ["AI response note: ..."].
     - Any LLM or validation failure yields
       {!Types.By_deterministic_fallback} and the top deterministic
       candidate.

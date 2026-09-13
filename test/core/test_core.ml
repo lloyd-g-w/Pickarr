@@ -598,13 +598,13 @@ let test_prompt_structure () =
   in
   let keys = match json with `Assoc l -> List.map fst l | _ -> [] in
   Alcotest.(check (list string))
-    "exact top-level keys"
+    "exact top-level keys, media first"
     [
+      "media";
       "hard_constraints";
       "structured_preferences";
       "natural_language_preferences";
       "temporary_instruction";
-      "media";
       "candidates";
     ]
     keys;
@@ -635,17 +635,76 @@ let test_prompt_structure () =
       "source";
       "codec";
       "audio";
-      "hdr";
-      "dolby_vision";
       "resolution";
       "release_group";
       "seeders";
       "custom_format_score";
-      "custom_formats";
       "languages";
       "quality";
       "deterministic_score";
+      "deterministic_rank";
+    ];
+  (* Absent and false fields are omitted rather than sent as nulls. *)
+  List.iter
+    (fun k ->
+      Alcotest.(check bool)
+        (Printf.sprintf "candidate omits %s when it has no value" k)
+        false (List.mem k candidate_keys))
+    [ "hdr"; "dolby_vision"; "is_repack"; "is_proper"; "arr_rejections" ]
+
+(* The whole point of the short ids: a torrent guid is often a magnet link of
+   several hundred characters, which models truncate or re-encode. *)
+let test_prompt_short_ids_only () =
+  let magnet =
+    "magnet:?xt=urn:btih:C3A821D65D39BE40989D733376A553CC116CD04B&dn=The+Dead+Pool+%281988+ITA%2FENG%29+%5B1080p+x265%5D&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337"
+  in
+  let releases =
+    [
+      mk_release ~id:magnet ~title:"The.Dead.Pool.1988.1080p.x265-A"
+        ~custom_format_score:(Some 10) ();
+      mk_release ~id:"https://indexer.example/api/t/def456"
+        ~title:"The.Dead.Pool.1988.1080p.x265-B" ~custom_format_score:(Some 5) ();
     ]
+  in
+  let ranked =
+    Scoring.rank Config.default_preferences Config.default_weights movie releases
+  in
+  let body, id_map =
+    Prompt.build_with_ids ~config:(config_with ()) ~instance:None ~media:movie
+      ranked
+  in
+  Alcotest.(check (list string))
+    "short ids are assigned in prompt order" [ "r1"; "r2" ]
+    (List.map fst id_map);
+  Alcotest.(check (list string))
+    "they map back to the real release ids"
+    (List.map (fun (s : Types.scored_release) -> s.Types.scored.Types.id) ranked)
+    (List.map snd id_map);
+  let candidate_ids =
+    match Yojson.Safe.from_string body with
+    | `Assoc l -> (
+        match List.assoc_opt "candidates" l with
+        | Some (`List items) ->
+            List.filter_map
+              (function
+                | `Assoc c -> (
+                    match List.assoc_opt "id" c with
+                    | Some (`String s) -> Some s
+                    | _ -> None)
+                | _ -> None)
+              items
+        | _ -> [])
+    | _ -> []
+  in
+  Alcotest.(check (list string)) "the model only sees r1..rN" [ "r1"; "r2" ]
+    candidate_ids;
+  List.iter
+    (fun needle ->
+      Alcotest.(check bool)
+        (Printf.sprintf "prompt never contains %S" needle)
+        false
+        (Filter.contains_ci ~needle ~haystack:body))
+    [ "magnet:"; "urn:btih"; "indexer.example"; "guid" ]
 
 let test_prompt_no_instruction () =
   let json =
@@ -706,14 +765,27 @@ let test_prompt_excludes_rejected () =
         | _ -> [])
     | _ -> []
   in
-  Alcotest.(check (list string))
-    "only surviving candidates are sent to the model" [ "ok" ] candidate_ids
+  Alcotest.(check int) "only one candidate is sent to the model" 1
+    (List.length candidate_ids);
+  (* The rejected release is not among the candidates: the surviving one is
+     r1, and its real id is "ok". *)
+  let _, id_map =
+    Prompt.build_with_ids ~config:(config_with ~hard_rules:rules ())
+      ~instance:None ~media:movie ranked
+  in
+  Alcotest.(check (list (pair string string)))
+    "only surviving candidates are sent to the model"
+    [ ("r1", "ok") ] id_map
 
 let test_prompt_system_mentions_hard_constraints () =
   Alcotest.(check bool)
     "system prompt states hard constraints are enforced" true
     (Filter.contains_ci ~needle:"hard_constraints" ~haystack:Prompt.system_prompt
-    && Filter.contains_ci ~needle:"STRICT JSON" ~haystack:Prompt.system_prompt)
+    && Filter.contains_ci ~needle:"STRICT JSON" ~haystack:Prompt.system_prompt);
+  Alcotest.(check bool)
+    "system prompt explains the short ids" true
+    (Filter.contains_ci ~needle:"r1, r2" ~haystack:Prompt.system_prompt
+    && Filter.contains_ci ~needle:"magnet" ~haystack:Prompt.system_prompt)
 
 (* ------------------------------------------------------------------------ *)
 (* LLM response validation                                                   *)
@@ -722,8 +794,30 @@ let test_prompt_system_mentions_hard_constraints () =
 let ids = [ "a"; "b"; "c" ]
 let parse s = Llm_response.parse ~candidate_ids:ids (Yojson.Safe.from_string s)
 
+(* The real pipeline uses short ids plus the titles as aliases. *)
+let short_ids = [ "r1"; "r2"; "r3" ]
+
+let short_aliases =
+  [
+    ("Movie.2026.1080p.WEB-DL.x265-FLUX", "r1");
+    ("Movie.2026.2160p.BluRay.REMUX-FraMeSToR", "r2");
+    ("Movie.2026.1080p.WEBRip.x264-JUNK", "r3");
+  ]
+
+let parse_short s =
+  Llm_response.parse_with_warnings ~candidate_ids:short_ids
+    ~aliases:short_aliases
+    (Yojson.Safe.from_string s)
+
+let decision_of label r =
+  match r with
+  | Ok (d, w) -> (d, w)
+  | Error e -> Alcotest.failf "%s: expected a decision, got: %s" label e
+
+let warned ~needle warnings =
+  List.exists (fun w -> Filter.contains_ci ~needle ~haystack:w) warnings
+
 let is_error = function Ok _ -> false | Error _ -> true
-let error_message = function Ok _ -> "" | Error e -> e
 
 let test_llm_valid () =
   match
@@ -760,56 +854,150 @@ let test_llm_unknown_selected_id () =
     (is_error
        (parse {|{"selected_id":"zzz","confidence":0.5,"reason":"","ranking":[]}|}))
 
-let test_llm_unknown_ranking_id () =
+(* The user-reported failure: the model echoes a mangled magnet link as one
+   ranking id.  That entry is dropped with a note; the pick still stands. *)
+let test_llm_mangled_ranking_id_dropped () =
+  let d, warnings =
+    decision_of "mangled ranking id"
+      (parse_short
+         {|{"selected_id":"r1","confidence":0.9,"reason":"best balance",
+            "ranking":[{"id":"r1","score":95,"reason":"good"},
+                       {"id":"magnet:?xt=urn:btih:C3A821D65D39BE40989D733376A553CC116CD04B&dn=The+Dead+Pool","score":40,"reason":"huge"}]}|})
+  in
+  Alcotest.(check string) "pick kept" "r1" d.Types.selected_id;
+  Alcotest.(check (list string))
+    "only the resolvable entry survives" [ "r1" ]
+    (List.map (fun (e : Types.llm_ranking_entry) -> e.Types.rank_id)
+       d.Types.ranking);
   Alcotest.(check bool)
-    "unknown ranking id rejected" true
-    (is_error
-       (parse
-          {|{"selected_id":"a","confidence":0.5,"reason":"",
-             "ranking":[{"id":"nope","score":10,"reason":""}]}|}))
+    "the user is told an entry was dropped" true
+    (warned ~needle:"unknown release" warnings)
+
+let test_llm_lenient_selected_id () =
+  let check_pick label expected body =
+    let d, _ = decision_of label (parse_short body) in
+    Alcotest.(check string) label expected d.Types.selected_id
+  in
+  check_pick "upper case" "r2"
+    {|{"selected_id":"R2","confidence":0.5,"ranking":[]}|};
+  check_pick "spaces and quotes" "r3"
+    {|{"selected_id":"  \"r 3\"  ","confidence":0.5,"ranking":[]}|};
+  check_pick "markdown emphasis and colon" "r1"
+    {|{"selected_id":"**r1:**","confidence":0.5,"ranking":[]}|};
+  check_pick "hash number" "r2"
+    {|{"selected_id":"#2","confidence":0.5,"ranking":[]}|};
+  check_pick "bare number" "r3"
+    {|{"selected_id":3,"confidence":0.5,"ranking":[]}|};
+  check_pick "the word candidate" "r1"
+    {|{"selected_id":"candidate 1","confidence":0.5,"ranking":[]}|};
+  check_pick "the title instead of the id" "r2"
+    {|{"selected_id":"Movie.2026.2160p.BluRay.REMUX-FraMeSToR","confidence":0.5,"ranking":[]}|}
+
+let test_llm_ambiguous_title_alias_refused () =
+  (* Two candidates with the same title: the title must not resolve. *)
+  let r =
+    Llm_response.parse_with_warnings ~candidate_ids:[ "r1"; "r2" ]
+      ~aliases:[ ("Same.Title", "r1"); ("Same.Title", "r2") ]
+      (Yojson.Safe.from_string
+         {|{"selected_id":"Same.Title","confidence":0.5,"ranking":[]}|})
+  in
+  Alcotest.(check bool) "ambiguous title rejected" true (is_error r)
 
 let test_llm_duplicate_ids () =
-  let r =
-    parse
-      {|{"selected_id":"a","confidence":0.5,"reason":"",
-         "ranking":[{"id":"a","score":90,"reason":""},
-                    {"id":"a","score":80,"reason":""}]}|}
+  let d, warnings =
+    decision_of "duplicates"
+      (parse_short
+         {|{"selected_id":"r1","confidence":0.5,"reason":"",
+            "ranking":[{"id":"r1","score":90,"reason":"first"},
+                       {"id":"r1","score":80,"reason":"second"}]}|})
   in
-  Alcotest.(check bool) "duplicates rejected" true (is_error r);
+  Alcotest.(check int) "one entry kept" 1 (List.length d.Types.ranking);
+  Alcotest.(check int) "the first one" 90
+    (match d.Types.ranking with e :: _ -> e.Types.rank_score | [] -> -1);
   Alcotest.(check bool)
-    "message mentions duplicates" true
-    (Filter.contains_ci ~needle:"duplicate" ~haystack:(error_message r))
+    "duplicate reported" true
+    (warned ~needle:"twice" warnings)
 
-let test_llm_score_out_of_range () =
-  Alcotest.(check bool)
-    "score > 100 rejected" true
-    (is_error
-       (parse
-          {|{"selected_id":"a","confidence":0.5,"reason":"",
-             "ranking":[{"id":"a","score":140,"reason":""}]}|}));
-  Alcotest.(check bool)
-    "negative score rejected" true
-    (is_error
-       (parse
-          {|{"selected_id":"a","confidence":0.5,"reason":"",
-             "ranking":[{"id":"a","score":-1,"reason":""}]}|}))
+let test_llm_score_clamped () =
+  let d, warnings =
+    decision_of "scores"
+      (parse_short
+         {|{"selected_id":"r1","confidence":0.5,"reason":"",
+            "ranking":[{"id":"r1","score":140,"reason":""},
+                       {"id":"r2","score":-5,"reason":""}]}|})
+  in
+  Alcotest.(check (list int))
+    "clamped into 0..100" [ 100; 0 ]
+    (List.map (fun (e : Types.llm_ranking_entry) -> e.Types.rank_score)
+       d.Types.ranking);
+  Alcotest.(check bool) "clamping reported" true (warned ~needle:"clamped" warnings)
 
-let test_llm_confidence_out_of_range () =
+let test_llm_missing_score_uses_position () =
+  let d, warnings =
+    decision_of "missing score"
+      (parse_short
+         {|{"selected_id":"r1","confidence":0.5,
+            "ranking":[{"id":"r1","reason":"best"},{"id":"r2","reason":"next"}]}|})
+  in
+  Alcotest.(check (list string))
+    "order preserved" [ "r1"; "r2" ]
+    (List.map (fun (e : Types.llm_ranking_entry) -> e.Types.rank_id)
+       d.Types.ranking);
   Alcotest.(check bool)
-    "confidence > 1 rejected" true
-    (is_error
-       (parse {|{"selected_id":"a","confidence":42,"reason":"","ranking":[]}|}))
+    "scores descend with position" true
+    (match d.Types.ranking with
+    | a :: b :: _ -> a.Types.rank_score > b.Types.rank_score
+    | _ -> false);
+  Alcotest.(check bool) "reported" true (warned ~needle:"position" warnings)
 
-let test_llm_missing_fields () =
+let test_llm_confidence_repaired () =
+  let confidence body =
+    let d, _ = decision_of "confidence" (parse_short body) in
+    d.Types.confidence
+  in
+  Alcotest.(check (float 0.001))
+    "percentage read as a fraction" 0.85
+    (confidence {|{"selected_id":"r1","confidence":85,"ranking":[]}|});
+  Alcotest.(check (float 0.001))
+    "above 100 clamped" 1.0
+    (confidence {|{"selected_id":"r1","confidence":420,"ranking":[]}|});
+  Alcotest.(check (float 0.001))
+    "negative clamped" 0.0
+    (confidence {|{"selected_id":"r1","confidence":-2,"ranking":[]}|});
+  Alcotest.(check (float 0.001))
+    "missing defaults to neutral" 0.5
+    (confidence {|{"selected_id":"r1","ranking":[]}|});
+  Alcotest.(check (float 0.001))
+    "unreadable defaults to neutral" 0.5
+    (confidence {|{"selected_id":"r1","confidence":"high","ranking":[]}|})
+
+let test_llm_missing_ranking () =
+  let d, warnings =
+    decision_of "missing ranking"
+      (parse_short {|{"selected_id":"r2","confidence":0.7,"reason":"why"}|})
+  in
+  Alcotest.(check (list string))
+    "ranking holds the pick alone" [ "r2" ]
+    (List.map (fun (e : Types.llm_ranking_entry) -> e.Types.rank_id)
+       d.Types.ranking);
+  Alcotest.(check bool) "reported" true (warned ~needle:"no ranking" warnings)
+
+let test_llm_unknown_selected_id_still_fatal () =
+  (* Safety: an id that is not a candidate can never be acted on, however
+     lenient the rest of the parsing is. *)
   Alcotest.(check bool)
-    "missing selected_id" true
-    (is_error (parse {|{"confidence":0.5,"ranking":[]}|}));
+    "invented id rejected" true
+    (is_error
+       (parse_short
+          {|{"selected_id":"r9","confidence":0.9,"ranking":[{"id":"r1","score":10}]}|}));
   Alcotest.(check bool)
-    "missing confidence" true
-    (is_error (parse {|{"selected_id":"a","ranking":[]}|}));
+    "magnet link as the pick rejected" true
+    (is_error
+       (parse_short
+          {|{"selected_id":"magnet:?xt=urn:btih:C3A821D6","confidence":0.9,"ranking":[]}|}));
   Alcotest.(check bool)
-    "missing ranking" true
-    (is_error (parse {|{"selected_id":"a","confidence":0.5}|}))
+    "missing selected_id rejected" true
+    (is_error (parse_short {|{"confidence":0.5,"ranking":[]}|}))
 
 let test_llm_malformed_types () =
   Alcotest.(check bool)
@@ -818,18 +1006,29 @@ let test_llm_malformed_types () =
   Alcotest.(check bool)
     "null" true
     (is_error (Llm_response.parse ~candidate_ids:ids `Null));
-  Alcotest.(check bool)
-    "ranking not an array" true
-    (is_error
-       (parse {|{"selected_id":"a","confidence":0.5,"ranking":"nope"}|}));
-  Alcotest.(check bool)
-    "ranking entry not an object" true
-    (is_error (parse {|{"selected_id":"a","confidence":0.5,"ranking":[1,2]}|}));
-  Alcotest.(check bool)
-    "influences not strings" true
-    (is_error
-       (parse
-          {|{"selected_id":"a","confidence":0.5,"ranking":[],"influences":[{"x":1}]}|}))
+  (* Everything below is advisory, so it is repaired instead of discarded. *)
+  let d, warnings =
+    decision_of "ranking not an array"
+      (parse_short {|{"selected_id":"r1","confidence":0.5,"ranking":"nope"}|})
+  in
+  Alcotest.(check (list string))
+    "falls back to the pick" [ "r1" ]
+    (List.map (fun (e : Types.llm_ranking_entry) -> e.Types.rank_id)
+       d.Types.ranking);
+  Alcotest.(check bool) "reported" true (warned ~needle:"not a list" warnings);
+  let d, warnings =
+    decision_of "ranking entries not objects"
+      (parse_short {|{"selected_id":"r1","confidence":0.5,"ranking":[1,2]}|})
+  in
+  Alcotest.(check int) "no junk entries kept" 1 (List.length d.Types.ranking);
+  Alcotest.(check bool) "reported" true (warned ~needle:"dropped" warnings);
+  let d, _ =
+    decision_of "influences not strings"
+      (parse_short
+         {|{"selected_id":"r1","confidence":0.5,"ranking":[],"influences":[{"x":1},"you prefer x265"]}|})
+  in
+  Alcotest.(check (list string))
+    "only sentences kept" [ "you prefer x265" ] d.Types.influences
 
 let test_llm_optional_reason () =
   match parse {|{"selected_id":"a","confidence":0.5,"ranking":[]}|} with
@@ -1024,6 +1223,8 @@ let test_pipeline_no_releases () =
 let ai_config () =
   config_with ~llm:{ Config.default_llm with llm_enabled = true } ()
 
+(* The model answers with the short ids it was given (r1 = the best
+   deterministic candidate); the result must carry the real release ids. *)
 let test_pipeline_llm_selection () =
   let a = mk_release ~id:"a" ~custom_format_score:(Some 100) () in
   let b = mk_release ~id:"b" ~custom_format_score:(Some 0) () in
@@ -1033,9 +1234,9 @@ let test_pipeline_llm_selection () =
     Lwt.return
       (Ok
          (Yojson.Safe.from_string
-            {|{"selected_id":"b","confidence":0.8,"reason":"smaller is fine",
-               "ranking":[{"id":"b","score":90,"reason":"good"},
-                          {"id":"a","score":50,"reason":"too big"}],
+            {|{"selected_id":"r2","confidence":0.8,"reason":"smaller is fine",
+               "ranking":[{"id":"r2","score":90,"reason":"good"},
+                          {"id":"r1","score":50,"reason":"too big"}],
                "influences":["you prefer sensible file sizes"]}|}))
   in
   let result = run_pipeline ~config:(ai_config ()) ~llm [ a; b ] in
@@ -1045,10 +1246,55 @@ let test_pipeline_llm_selection () =
   Alcotest.(check (list string))
     "candidates re-ordered by the llm ranking" [ "b"; "a" ]
     (List.map (fun s -> s.Types.scored.Types.id) result.Types.candidates);
+  Alcotest.(check (list string))
+    "the decision carries real release ids, not r1/r2" [ "b"; "a" ]
+    (match result.Types.llm with
+    | Some d ->
+        List.map (fun (e : Types.llm_ranking_entry) -> e.Types.rank_id)
+          d.Types.ranking
+    | None -> []);
+  Alcotest.(check string)
+    "selected id is the real one" "b"
+    (match result.Types.llm with Some d -> d.Types.selected_id | None -> "");
   Alcotest.(check bool)
     "llm influence surfaced in the explanation" true
     (List.exists
        (fun b -> b = "you prefer sensible file sizes")
+       result.Types.explanation);
+  Alcotest.(check bool)
+    "a clean answer produces no notes" false
+    (List.exists
+       (fun b -> Filter.contains_ci ~needle:"AI response note" ~haystack:b)
+       result.Types.explanation)
+
+(* A guid that is a magnet link used to make every answer unusable: the model
+   never sees it now, and a mangled echo of it is only a note. *)
+let test_pipeline_llm_magnet_guid () =
+  let magnet =
+    "magnet:?xt=urn:btih:C3A821D65D39BE40989D733376A553CC116CD04B&dn=The+Dead+Pool+%281988%29&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337"
+  in
+  let a = mk_release ~id:magnet ~custom_format_score:(Some 100) () in
+  let b = mk_release ~id:"plain-guid" ~custom_format_score:(Some 0) () in
+  let llm ~system ~user =
+    ignore system;
+    ignore user;
+    Lwt.return
+      (Ok
+         (Yojson.Safe.from_string
+            {|{"selected_id":"r1","confidence":0.9,"reason":"best",
+               "ranking":[{"id":"r1","score":95,"reason":"best"},
+                          {"id":"magnet:?xt=urn:btih:C3A8...truncated","score":10,"reason":"worse"}]}|}))
+  in
+  let result = run_pipeline ~config:(ai_config ()) ~llm [ a; b ] in
+  Alcotest.(check bool)
+    "still an AI selection" true
+    (result.Types.method_ = Types.By_llm);
+  Alcotest.(check string) "the magnet release is selected by its short id"
+    magnet (selected_id result);
+  Alcotest.(check bool)
+    "the dropped entry is explained to the user" true
+    (List.exists
+       (fun b -> Filter.contains_ci ~needle:"AI response note" ~haystack:b)
        result.Types.explanation)
 
 let test_pipeline_llm_failure_falls_back () =
@@ -1146,7 +1392,7 @@ let test_pipeline_hard_rules_beat_ai () =
                 items
         | _ -> ())
     | _ -> ());
-    (* The model tries to pick the blocked release anyway. *)
+    (* The model tries to pick the blocked release anyway, by name. *)
     Lwt.return
       (Ok
          (Yojson.Safe.from_string
@@ -1155,7 +1401,7 @@ let test_pipeline_hard_rules_beat_ai () =
   in
   let result = run_pipeline ~config ~llm [ av1; x265 ] in
   Alcotest.(check (list string))
-    "blocked release never sent to the model" [ "x265" ] !seen_ids;
+    "only the surviving candidate is sent, under a short id" [ "r1" ] !seen_ids;
   Alcotest.(check string) "blocked release never selected" "x265"
     (selected_id result);
   Alcotest.(check bool)
@@ -1359,6 +1605,7 @@ let () =
             test_prompt_limits_candidates;
           Alcotest.test_case "excludes rejected" `Quick
             test_prompt_excludes_rejected;
+          Alcotest.test_case "short ids only" `Quick test_prompt_short_ids_only;
           Alcotest.test_case "system prompt" `Quick
             test_prompt_system_mentions_hard_constraints;
         ] );
@@ -1368,13 +1615,21 @@ let () =
           Alcotest.test_case "numeric strings" `Quick test_llm_numeric_strings;
           Alcotest.test_case "unknown selected id" `Quick
             test_llm_unknown_selected_id;
-          Alcotest.test_case "unknown ranking id" `Quick
-            test_llm_unknown_ranking_id;
+          Alcotest.test_case "mangled ranking id dropped" `Quick
+            test_llm_mangled_ranking_id_dropped;
+          Alcotest.test_case "lenient selected id" `Quick
+            test_llm_lenient_selected_id;
+          Alcotest.test_case "ambiguous title refused" `Quick
+            test_llm_ambiguous_title_alias_refused;
           Alcotest.test_case "duplicate ids" `Quick test_llm_duplicate_ids;
-          Alcotest.test_case "score range" `Quick test_llm_score_out_of_range;
-          Alcotest.test_case "confidence range" `Quick
-            test_llm_confidence_out_of_range;
-          Alcotest.test_case "missing fields" `Quick test_llm_missing_fields;
+          Alcotest.test_case "score clamped" `Quick test_llm_score_clamped;
+          Alcotest.test_case "missing score uses position" `Quick
+            test_llm_missing_score_uses_position;
+          Alcotest.test_case "confidence repaired" `Quick
+            test_llm_confidence_repaired;
+          Alcotest.test_case "missing ranking" `Quick test_llm_missing_ranking;
+          Alcotest.test_case "unknown selected id is fatal" `Quick
+            test_llm_unknown_selected_id_still_fatal;
           Alcotest.test_case "malformed types" `Quick test_llm_malformed_types;
           Alcotest.test_case "optional reason" `Quick test_llm_optional_reason;
         ] );
@@ -1396,6 +1651,8 @@ let () =
           Alcotest.test_case "no candidates" `Quick test_pipeline_no_candidates;
           Alcotest.test_case "no releases" `Quick test_pipeline_no_releases;
           Alcotest.test_case "llm selection" `Quick test_pipeline_llm_selection;
+          Alcotest.test_case "llm with a magnet guid" `Quick
+            test_pipeline_llm_magnet_guid;
           Alcotest.test_case "llm failure fallback" `Quick
             test_pipeline_llm_failure_falls_back;
           Alcotest.test_case "llm malformed fallback" `Quick

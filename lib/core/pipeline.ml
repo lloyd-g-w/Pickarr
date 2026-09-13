@@ -92,11 +92,16 @@ let run ~(config : Config.t) ~(instance : Config.instance option)
       let use_ai =
         Option.value use_ai ~default:config.Config.llm.Config.llm_enabled
       in
-      let explain_and_finish ~selected ~candidates ~reason ~method_
-          ~llm_decision =
+      let explain_and_finish ?(notes = []) ~selected ~candidates ~reason
+          ~method_ ~llm_decision () =
         let explanation, conflicts =
           Explain.explain ~config ~instance ~media ~selected ~candidates
             ~rejected ~llm:llm_decision
+        in
+        (* What the model got wrong is shown after the explanation, so the
+           user can tell a sloppy model from a bad configuration. *)
+        let explanation =
+          explanation @ List.map (fun n -> "AI response note: " ^ n) notes
         in
         finish ~selected:(Some selected) ~candidates ~rejected ~reason
           ~explanation ~conflicts ~method_ ~llm_decision
@@ -106,21 +111,37 @@ let run ~(config : Config.t) ~(instance : Config.instance option)
           ~reason:
             (Printf.sprintf "%s (AI selection unavailable: %s)"
                (deterministic_reason top) why)
-          ~method_:(Types.By_deterministic_fallback why) ~llm_decision:None
+          ~method_:(Types.By_deterministic_fallback why) ~llm_decision:None ()
       in
       (* Stage 4: AI ranking, when enabled and available. *)
       (match (use_ai, llm) with
       | false, _ | _, None ->
           explain_and_finish ~selected:top ~candidates:ranked
             ~reason:(deterministic_reason top) ~method_:Types.By_deterministic
-            ~llm_decision:None
+            ~llm_decision:None ()
       | true, Some call ->
-          let sent = Prompt.candidates_for_llm config.Config.llm ranked in
-          let candidate_ids =
-            List.map (fun s -> s.Types.scored.Types.id) sent
+          (* The model sees short ids ("r1", "r2", ...), never a guid: a
+             magnet link is far too long for a model to echo back reliably.
+             Its answer is translated back to real ids here. *)
+          let user, id_map =
+            Prompt.build_with_ids ~config ~instance ~media ~instruction ranked
           in
-          let user =
-            Prompt.build ~config ~instance ~media ~instruction ranked
+          let candidate_ids = List.map fst id_map in
+          let real_id_of short =
+            Option.value (List.assoc_opt short id_map) ~default:short
+          in
+          (* A model that answers with the title instead of the id is still
+             understood. *)
+          let aliases =
+            List.filter_map
+              (fun (short, real) ->
+                List.find_opt
+                  (fun (s : Types.scored_release) ->
+                    s.Types.scored.Types.id = real)
+                  ranked
+                |> Option.map (fun (s : Types.scored_release) ->
+                       (s.Types.scored.Types.title, short)))
+              id_map
           in
           Lwt.bind
             (Lwt.catch
@@ -129,9 +150,27 @@ let run ~(config : Config.t) ~(instance : Config.instance option)
             (function
               | Error why -> fallback why
               | Ok json -> (
-                  match Llm_response.parse ~candidate_ids json with
+                  match
+                    Llm_response.parse_with_warnings ~candidate_ids ~aliases
+                      json
+                  with
                   | Error why -> fallback ("invalid response: " ^ why)
-                  | Ok decision -> (
+                  | Ok (decision, notes) -> (
+                      let decision =
+                        {
+                          decision with
+                          Types.selected_id =
+                            real_id_of decision.Types.selected_id;
+                          ranking =
+                            List.map
+                              (fun (e : Types.llm_ranking_entry) ->
+                                {
+                                  e with
+                                  Types.rank_id = real_id_of e.Types.rank_id;
+                                })
+                              decision.Types.ranking;
+                        }
+                      in
                       let selected =
                         List.find_opt
                           (fun s ->
@@ -154,7 +193,7 @@ let run ~(config : Config.t) ~(instance : Config.instance option)
                                   decision.Types.confidence
                             | r -> r
                           in
-                          explain_and_finish ~selected
+                          explain_and_finish ~notes ~selected
                             ~candidates:(reorder_by_ranking decision ranked)
                             ~reason ~method_:Types.By_llm
-                            ~llm_decision:(Some decision)))))
+                            ~llm_decision:(Some decision) ()))))

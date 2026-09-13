@@ -2,7 +2,7 @@
 
 Not part of `dune test`: these drive the **real** binary against fake Sonarr,
 Radarr, Seerr and LLM servers, and check the browser UI with a DOM stub. They
-need `python3` and `node`, and they bind ports 19100-19299 on loopback.
+need `python3` and `node`, and they bind ports 19100-19449 on loopback.
 
 Build first, from the repository root, and run them from anywhere — each
 script resolves the repository from its own location:
@@ -23,6 +23,22 @@ Asserts the four select routes, the grab bodies Sonarr/Radarr receive, the
 AI and deterministic-fallback paths, grab-by-release-id (including that a
 hard-rejected release is refused), and that no failure mode answers 5xx.
 See `docs/GRAB_BUG_NOTES.md`.
+
+## AI selection with magnet-link guids
+
+```bash
+bash test/smoke/llm_e2e.sh
+```
+
+Reproduces the reported "AI unavailable, used deterministic scoring: invalid
+response: ranking contains unknown release id "magnet:?xt=urn:btih:…"" against
+a fake Sonarr whose guids are 200-320 character magnet links. Asserts that the
+prompt contains no guid/URL/magnet/info hash and uses `r1..rN` ids, that a
+clean answer selects the real release, that a mangled magnet id in the ranking
+is dropped with a visible note instead of losing the AI pick, that a title or
+`#2` as the id still resolves, that `confidence: 85` is read as `0.85`, that
+prose and truncated answers fall back to deterministic scoring, and that the
+grab still carries the full magnet guid.
 
 ## Seasons and whole series
 
@@ -80,3 +96,5 @@ node test/smoke/check_element_ids.js
 | `fake_sonarr_seasons.py` | Sonarr with seasons, `?tvdbId=` lookup, pack and episode searches, recorded grabs at `/__grabs` |
 | `fake_seerr.py` | Seerr `/api/v1`; `FAKE_SEERR_MODE=tv` serves one approved TV request instead of the movie ones |
 | `fake_radarr_seerr.py` | Radarr for the Seerr tests, recording searches and grabs to a JSON state file |
+| `fake_sonarr_magnet.py` | Sonarr whose releases have magnet-link guids (`fixtures/sonarr_releases_magnet.json`) |
+| `fake_llm.py` | OpenAI-compatible server answering `short`, `mangled`, `titles`, `percent`, `prose` or `truncated` |

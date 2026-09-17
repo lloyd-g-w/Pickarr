@@ -14,6 +14,7 @@ const state = {
 /* Sonarr/Radarr only answer an interactive search once every indexer has
    replied, so this request legitimately takes far longer than any other.
    Saying so stops it looking hung (see network.arr_search_timeout_seconds). */
+const GRAB_WAIT_HINT = " this can take a moment; Pickarr confirms the download queue afterwards";
 const SEARCH_WAIT_HINT =
   " — this can take a minute or two while Sonarr/Radarr query every indexer";
 
@@ -58,8 +59,11 @@ async function api(path, options = {}) {
   if (options.body) headers["Content-Type"] = "application/json";
   const response = await fetch(path, Object.assign({}, options, { headers, credentials: "same-origin" }));
   if (response.status === 401 && !path.startsWith("/api/auth/")) {
-    // The session expired: the server-rendered login page takes over.
+    // The session expired: the server-rendered login page takes over. The
+    // error below still fires, so it must read sensibly for the moment
+    // before the redirect happens.
     window.location.href = "/login";
+    throw new Error("session expired — log in again and retry");
   }
   let payload = null;
   const text = await response.text();
@@ -589,26 +593,41 @@ async function grabCandidate(release, button, ctx) {
   if (!ctx || !ctx.instanceId || !ctx.media) return toast("Search first", true);
   if (!confirm(`Grab this release now?\n\n${release.title}`)) return;
   const previous = button.textContent;
+  /* A grab can take a while: it may have to search again if Sonarr/Radarr
+     dropped the release from their 30-minute cache, and it waits briefly to
+     see the download queue. Disabling the button also stops double grabs. */
   button.disabled = true;
   button.textContent = "grabbing…";
-  ctx.setStatus("grabbing…", true);
+  ctx.setStatus("grabbing…" + GRAB_WAIT_HINT, true);
   try {
     const result = await api(grabUrlFor(ctx.instanceId, ctx.media), {
       method: "POST",
-      body: JSON.stringify({ release_id: release.id }),
+      /* guid and indexer_id identify the release even if its id changed
+         since the search; the server still only grabs a release it has
+         searched and checked against the hard rules. */
+      body: JSON.stringify({
+        release_id: release.id,
+        guid: release.guid || undefined,
+        indexer_id: release.indexer_id || undefined,
+      }),
     });
     state.lastResult = result;
     ctx.setStatus(
-      result.grabbed ? "grabbed" : `not grabbed: ${result.grab_error || "unknown reason"}`,
+      result.grabbed
+        ? "grabbed" + (result.grab_notes && result.grab_notes.length ? ` · ${result.grab_notes.join(" · ")}` : "")
+        : `not grabbed: ${result.grab_error || "unknown reason"}`,
       result.grabbed
     );
     ctx.rerender(result);
     loadHistory();
   } catch (e) {
-    button.disabled = false;
-    button.textContent = previous;
     ctx.setStatus(describeApiError(e), false);
     toast(describeApiError(e), true);
+  } finally {
+    /* rerender() replaces this button, but on an error path it stays on the
+       page and must be usable again. */
+    button.disabled = false;
+    button.textContent = previous;
   }
 }
 
@@ -678,7 +697,10 @@ function renderSelectionResult(result, target, ctx) {
         )
       ),
       method.llm_error ? el("div", { class: "conflicts" }, "AI unavailable, used deterministic scoring: " + method.llm_error) : null,
-      result.grab_error ? el("div", { class: "conflicts" }, "Grab failed: " + result.grab_error) : null
+      result.grab_error ? el("div", { class: "conflicts" }, "Grab failed: " + result.grab_error) : null,
+      result.grab_notes && result.grab_notes.length
+        ? el("div", { class: "hint" }, "Grab: " + result.grab_notes.join(" · "))
+        : null
     )
   );
 

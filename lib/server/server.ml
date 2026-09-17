@@ -60,6 +60,9 @@ let describe (state : App_state.t) =
     (if cfg.automatic.auto_enabled && not cfg.automatic.auto_grab then
        " (dry run: grabbing disabled)"
      else "");
+  Log_buffer.infof
+    "*arr timeouts: %ds for reads, %ds for release searches and library listings"
+    cfg.network.arr_timeout_seconds cfg.network.arr_search_timeout_seconds;
   Log_buffer.infof "Seerr integration %s%s"
     (if cfg.seerr.seerr_enabled then "enabled" else "disabled")
     (if cfg.seerr.seerr_enabled then
@@ -95,6 +98,10 @@ let main () =
   | Ok state ->
       let cfg = App_state.config state in
       Dream.initialize_log ~level:(log_level_of_string cfg.log_level) ();
+      (* Apply the read timeout before anything talks to Sonarr/Radarr; every
+         later change goes through App_state.client. *)
+      Pickarr_arr.Http.timeout_seconds :=
+        (Pickarr_arr.Client.timeouts_of_network cfg.network).quick_seconds;
       describe state;
       Automatic.start state;
       Seerr_sync.start state;

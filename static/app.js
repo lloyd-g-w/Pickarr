@@ -11,6 +11,12 @@ const state = {
   proposal: null,
 };
 
+/* Sonarr/Radarr only answer an interactive search once every indexer has
+   replied, so this request legitimately takes far longer than any other.
+   Saying so stops it looking hung (see network.arr_search_timeout_seconds). */
+const SEARCH_WAIT_HINT =
+  " — this can take a minute or two while Sonarr/Radarr query every indexer";
+
 /* ------------------------------------------------------------------ */
 /* helpers                                                             */
 /* ------------------------------------------------------------------ */
@@ -329,6 +335,26 @@ const llmSchema = [
   { key: "max_candidates", label: "Max candidates sent to the model", type: "int" },
 ];
 
+const networkSchema = [
+  {
+    key: "arr_timeout_seconds",
+    label: "Read timeout (seconds)",
+    type: "int",
+    min: 5,
+    max: 900,
+    hint: "status, movie, episode, queue, history, grab \u2014 default 30",
+  },
+  {
+    key: "arr_search_timeout_seconds",
+    label: "Release search timeout (seconds)",
+    type: "int",
+    min: 5,
+    max: 900,
+    hint:
+      "interactive searches and library listings \u2014 default 180; raise it if your indexers are slow",
+  },
+];
+
 const automaticSchema = [
   { key: "enabled", label: "Automatic mode enabled", type: "bool" },
   { key: "grab", label: "Actually grab", type: "bool", hint: "off = dry run" },
@@ -535,7 +561,7 @@ async function runSelection(grab, mediaId) {
   if (instruction) body.instruction = instruction;
   setResult(
     "#select-status",
-    grab ? "searching and grabbing…" : "searching…",
+    (grab ? "searching and grabbing…" : "searching…") + SEARCH_WAIT_HINT,
     true
   );
   $("#select-result").replaceChildren();
@@ -1281,7 +1307,8 @@ async function runSeasonSelection(grab, seriesId, season) {
   if (Number.isNaN(season) || season < 0) return toast("Pick a season first", true);
   setResult(
     "#select-status",
-    grab ? "searching for a pack and grabbing…" : "searching for a pack…",
+    (grab ? "searching for a pack and grabbing…" : "searching for a pack…") +
+      SEARCH_WAIT_HINT,
     true
   );
   $("#select-result").replaceChildren();
@@ -1312,7 +1339,9 @@ async function runSeriesSelection(grab, seriesId, seasons) {
   if (seasons && seasons.length) body.seasons = seasons;
   setResult(
     "#select-status",
-    grab ? "searching the whole series and grabbing…" : "searching the whole series…",
+    (grab
+      ? "searching the whole series and grabbing…"
+      : "searching the whole series…") + SEARCH_WAIT_HINT,
     true
   );
   $("#select-result").replaceChildren();
@@ -1950,6 +1979,7 @@ async function loadConfig() {
   buildForm($("#llm-form"), llmSchema, state.config.llm);
   buildForm($("#automatic-form"), automaticSchema, state.config.automatic);
   buildForm($("#seasons-form"), seasonsSchema, seasonsToForm(state.config.seasons));
+  buildForm($("#network-form"), networkSchema, state.config.network);
   renderInstancesEditor();
   renderInstanceOptions();
   renderDashboardInstances();
@@ -2060,6 +2090,15 @@ function wire() {
         buildForm($("#seasons-form"), seasonsSchema, seasonsToForm(state.config.seasons));
         loadAutomatic();
       }
+    })
+  );
+
+  $("#save-network").addEventListener("click", () =>
+    saveConfigPatch(
+      { network: readForm($("#network-form"), networkSchema) },
+      "#network-status"
+    ).then((ok) => {
+      if (ok) buildForm($("#network-form"), networkSchema, state.config.network);
     })
   );
 
@@ -2618,7 +2657,10 @@ async function runSeerrSelection(grab, overrides) {
   if (opts.instanceId) seerrPanel.instanceId = opts.instanceId;
   const body = seerrSelectionBody(grab);
   if (opts.seasonNumber !== undefined) body.season_number = opts.seasonNumber;
-  seerrPanelStatus(grab ? "searching and grabbing…" : "searching…", true);
+  seerrPanelStatus(
+    (grab ? "searching and grabbing…" : "searching…") + SEARCH_WAIT_HINT,
+    true
+  );
   $("#seerr-request-result").replaceChildren();
   try {
     const payload = await api(`/api/seerr/requests/${seerrPanel.id}/select`, {

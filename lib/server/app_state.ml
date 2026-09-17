@@ -2,7 +2,9 @@
    clients, and the automatic-mode scheduler state.
 
    Clients are cached per instance id and rebuilt whenever the instance's URL
-   or API key changes, so a config update takes effect without a restart. *)
+   or API key changes, so a config update takes effect without a restart.
+   A change to the network timeouts is pushed into the existing client
+   instead, which keeps its cached library listing. *)
 
 module Config = Pickarr_core.Config
 module Types = Pickarr_core.Types
@@ -69,14 +71,18 @@ let create ?(getenv = Sys.getenv_opt) (store : Store.t) (auth : Auth.t) =
 let config t = Store.config t.store
 
 (** The *arr client for [inst], created on first use and rebuilt when the
-    connection details change. *)
+    connection details change.  Timeouts follow the stored configuration on
+    every call, so raising [network.arr_search_timeout_seconds] applies to the
+    next search without a restart. *)
 let client t (inst : Config.instance) =
+  let timeouts = Client.timeouts_of_network (config t).network in
   match Hashtbl.find_opt t.clients inst.inst_id with
   | Some (cached, c)
     when cached.inst_url = inst.inst_url && cached.inst_api_key = inst.inst_api_key ->
+      if Client.timeouts c <> timeouts then Client.set_timeouts c timeouts;
       c
   | _ ->
-      let c = Client.create inst in
+      let c = Client.create ~timeouts inst in
       Hashtbl.replace t.clients inst.inst_id (inst, c);
       c
 

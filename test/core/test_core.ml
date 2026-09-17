@@ -1545,6 +1545,99 @@ let test_rules_proposal_prompt () =
        ~haystack:Rules_proposal.system_prompt)
 
 (* ------------------------------------------------------------------------ *)
+(* Network timeouts                                                          *)
+(* ------------------------------------------------------------------------ *)
+
+let test_network_defaults () =
+  Alcotest.(check int)
+    "quick calls default to 30s" 30
+    Config.default.Config.network.Config.arr_timeout_seconds;
+  Alcotest.(check int)
+    "release searches default to 180s" 180
+    Config.default.Config.network.Config.arr_search_timeout_seconds;
+  Alcotest.(check bool)
+    "a search may take far longer than a read" true
+    (Config.default.Config.network.Config.arr_search_timeout_seconds
+    > Config.default.Config.network.Config.arr_timeout_seconds)
+
+let network_of_json s =
+  match Config.of_yojson (Yojson.Safe.from_string s) with
+  | Ok c -> c.Config.network
+  | Error e -> Alcotest.failf "config did not decode: %s" e
+
+let test_network_round_trip () =
+  let n = network_of_json {|{"network":{"arr_timeout_seconds":45,"arr_search_timeout_seconds":300}}|} in
+  Alcotest.(check int) "read timeout decoded" 45 n.Config.arr_timeout_seconds;
+  Alcotest.(check int) "search timeout decoded" 300 n.Config.arr_search_timeout_seconds;
+  (* to_yojson -> of_yojson keeps both values *)
+  let encoded = Config.to_yojson { Config.default with Config.network = n } in
+  match Config.of_yojson encoded with
+  | Error e -> Alcotest.failf "re-decode failed: %s" e
+  | Ok c ->
+      Alcotest.(check int) "read timeout survives a round trip" 45
+        c.Config.network.Config.arr_timeout_seconds;
+      Alcotest.(check int) "search timeout survives a round trip" 300
+        c.Config.network.Config.arr_search_timeout_seconds
+
+let test_network_missing_section_keeps_defaults () =
+  let n = network_of_json {|{"llm":{"model":"m"}}|} in
+  Alcotest.(check int) "read timeout default" 30 n.Config.arr_timeout_seconds;
+  Alcotest.(check int) "search timeout default" 180 n.Config.arr_search_timeout_seconds;
+  (* A partial section keeps the other value. *)
+  let partial = network_of_json {|{"network":{"arr_search_timeout_seconds":600}}|} in
+  Alcotest.(check int) "read timeout untouched" 30 partial.Config.arr_timeout_seconds;
+  Alcotest.(check int) "search timeout applied" 600
+    partial.Config.arr_search_timeout_seconds
+
+let test_network_clamps () =
+  (* A tiny value would make every call fail; a huge one would hang a page
+     for hours. *)
+  let low = network_of_json {|{"network":{"arr_timeout_seconds":0,"arr_search_timeout_seconds":-5}}|} in
+  Alcotest.(check int) "zero clamped up" 5 low.Config.arr_timeout_seconds;
+  Alcotest.(check int) "negative clamped up" 5 low.Config.arr_search_timeout_seconds;
+  let high =
+    network_of_json {|{"network":{"arr_timeout_seconds":9999,"arr_search_timeout_seconds":100000}}|}
+  in
+  Alcotest.(check int) "read timeout clamped down" 900 high.Config.arr_timeout_seconds;
+  Alcotest.(check int) "search timeout clamped down" 900
+    high.Config.arr_search_timeout_seconds
+
+let test_network_env_override () =
+  let env = function
+    | "ARR_TIMEOUT_SECONDS" -> Some "20"
+    | "ARR_SEARCH_TIMEOUT_SECONDS" -> Some "240"
+    | _ -> None
+  in
+  let c = Config.apply_env ~getenv:env Config.default in
+  Alcotest.(check int) "read timeout from the environment" 20
+    c.Config.network.Config.arr_timeout_seconds;
+  Alcotest.(check int) "search timeout from the environment" 240
+    c.Config.network.Config.arr_search_timeout_seconds;
+  (* Environment values are clamped and garbage is ignored. *)
+  let odd = function
+    | "ARR_TIMEOUT_SECONDS" -> Some "1"
+    | "ARR_SEARCH_TIMEOUT_SECONDS" -> Some "soon"
+    | _ -> None
+  in
+  let c = Config.apply_env ~getenv:odd Config.default in
+  Alcotest.(check int) "clamped" 5 c.Config.network.Config.arr_timeout_seconds;
+  Alcotest.(check int) "unparseable value keeps the default" 180
+    c.Config.network.Config.arr_search_timeout_seconds;
+  (* Nothing set: the stored configuration wins. *)
+  let stored =
+    {
+      Config.default with
+      Config.network =
+        { Config.arr_timeout_seconds = 60; arr_search_timeout_seconds = 120 };
+    }
+  in
+  let c = Config.apply_env ~getenv:(fun _ -> None) stored in
+  Alcotest.(check int) "stored read timeout kept" 60
+    c.Config.network.Config.arr_timeout_seconds;
+  Alcotest.(check int) "stored search timeout kept" 120
+    c.Config.network.Config.arr_search_timeout_seconds
+
+(* ------------------------------------------------------------------------ *)
 (* Runner                                                                    *)
 (* ------------------------------------------------------------------------ *)
 
@@ -1666,6 +1759,15 @@ let () =
           Alcotest.test_case "temporary instruction" `Quick
             test_pipeline_temporary_instruction_forwarded;
           Alcotest.test_case "duration" `Quick test_pipeline_duration;
+        ] );
+      ( "network",
+        [
+          Alcotest.test_case "defaults" `Quick test_network_defaults;
+          Alcotest.test_case "round trip" `Quick test_network_round_trip;
+          Alcotest.test_case "missing section" `Quick
+            test_network_missing_section_keeps_defaults;
+          Alcotest.test_case "clamps" `Quick test_network_clamps;
+          Alcotest.test_case "env override" `Quick test_network_env_override;
         ] );
       ( "rules_proposal",
         [

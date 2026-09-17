@@ -7,7 +7,31 @@ type t
 type error = Http.error
 
 val error_to_string : error -> string
-val create : Pickarr_core.Config.instance -> t
+
+type timeouts = {
+  quick_seconds : float;
+      (** Reads and actions: status, movie, episode, tag, profile, wanted,
+          queue, history, grab. *)
+  search_seconds : float;
+      (** [GET /api/v3/release] (the interactive search, which waits for
+          every indexer) and the whole-library listings. *)
+}
+(** See {!Pickarr_core.Config.network}. *)
+
+val timeouts_of_network : Pickarr_core.Config.network -> timeouts
+val default_timeouts : timeouts
+
+val create : ?timeouts:timeouts -> Pickarr_core.Config.instance -> t
+(** [timeouts] defaults to {!default_timeouts}. *)
+
+val timeouts : t -> timeouts
+
+val set_timeouts : t -> timeouts -> unit
+(** Update the timeouts of an existing client, so a configuration change
+    takes effect without dropping the cached library.  Also updates
+    {!Http.timeout_seconds}, the process-wide default used by every call
+    that is not a search. *)
+
 val instance : t -> Pickarr_core.Config.instance
 val app : t -> Pickarr_core.Types.app
 
@@ -66,9 +90,9 @@ val search_releases :
     series-wide release search, so a whole series is selected season by
     season (see {!fetch_series_overview}).
 
-    Note that this call runs a live indexer search and typically takes
-    several seconds; it also primes the 30-minute release cache that
-    {!grab} depends on. *)
+    Note that this call runs a live indexer search: it commonly takes 30-120s
+    and so uses [timeouts.search_seconds], not the quick timeout.  It also
+    primes the 30-minute release cache that {!grab} depends on. *)
 
 val grab :
   t ->

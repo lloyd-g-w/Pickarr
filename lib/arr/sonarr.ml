@@ -306,9 +306,10 @@ let series_by_tvdb_id ~base_url ~api_key tvdb_id =
       | Ok l -> ok (List.map series_resource_of_yojson l))
 
 (** [GET /api/v3/series]  (the whole library; no query parameters, so the
-    response is every series Sonarr knows about) *)
-let all_series ~base_url ~api_key () =
-  let* r = Http.get ~base_url ~api_key "/api/v3/series" in
+    response is every series Sonarr knows about).  Slow on large libraries,
+    hence [?timeout]. *)
+let all_series ~base_url ~api_key ?timeout () =
+  let* r = Http.get ~base_url ~api_key ?timeout ~kind:`Search "/api/v3/series" in
   match r with
   | Error e -> Lwt.return (Error e)
   | Ok j -> (
@@ -336,12 +337,14 @@ let quality_profile ~base_url ~api_key id =
   let* r = Http.get ~base_url ~api_key (Printf.sprintf "/api/v3/qualityprofile/%d" id) in
   Lwt.return (map_result R.quality_profile_of_yojson r)
 
-(** [GET /api/v3/release?episodeId=]  (interactive search for one episode) *)
-let releases_for_episode ~base_url ~api_key episode_id =
+(** [GET /api/v3/release?episodeId=]  (interactive search for one episode).
+    Sonarr queries every indexer before answering, so this needs the search
+    timeout, not the quick one. *)
+let releases_for_episode ~base_url ~api_key ?timeout episode_id =
   let* r =
     Http.get ~base_url ~api_key
       ~query:[ ("episodeId", string_of_int episode_id) ]
-      "/api/v3/release"
+      ?timeout ~kind:`Search "/api/v3/release"
   in
   match r with
   | Error e -> Lwt.return (Error e)
@@ -351,7 +354,7 @@ let releases_for_episode ~base_url ~api_key episode_id =
       | Ok l -> ok (List.map release_resource_of_yojson l))
 
 (** [GET /api/v3/release?seriesId=&seasonNumber=]  (season pack search) *)
-let releases_for_season ~base_url ~api_key ~series_id ~season_number =
+let releases_for_season ~base_url ~api_key ?timeout ~series_id ~season_number () =
   let* r =
     Http.get ~base_url ~api_key
       ~query:
@@ -359,7 +362,7 @@ let releases_for_season ~base_url ~api_key ~series_id ~season_number =
           ("seriesId", string_of_int series_id);
           ("seasonNumber", string_of_int season_number);
         ]
-      "/api/v3/release"
+      ?timeout ~kind:`Search "/api/v3/release"
   in
   match r with
   | Error e -> Lwt.return (Error e)

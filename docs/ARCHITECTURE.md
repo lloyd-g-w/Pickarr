@@ -81,9 +81,15 @@ module Http : sig
     | Http_status of int * string       (* non-2xx with body *)
     | Json of string                    (* body not JSON / decode failure *)
   val error_to_string : error -> string
-  val get  : base_url:string -> api_key:string -> ?query:(string * string) list -> string -> (Yojson.Safe.t, error) result Lwt.t
-  val post : base_url:string -> api_key:string -> string -> Yojson.Safe.t -> (Yojson.Safe.t, error) result Lwt.t
-  val put  : base_url:string -> api_key:string -> string -> Yojson.Safe.t -> (Yojson.Safe.t, error) result Lwt.t
+  (* [kind] only shapes the timeout message: `Search names
+     network.arr_search_timeout_seconds, `Quick names network.arr_timeout_seconds.
+     [timeout] defaults to !timeout_seconds (the quick value, kept in step with
+     the config by Client.set_timeouts). *)
+  type kind = [ `Quick | `Search ]
+  val timeout_seconds : float ref
+  val get  : base_url:string -> api_key:string -> ?query:(string * string) list -> ?timeout:float -> ?kind:kind -> string -> (Yojson.Safe.t, error) result Lwt.t
+  val post : base_url:string -> api_key:string -> ?timeout:float -> ?kind:kind -> string -> Yojson.Safe.t -> (Yojson.Safe.t, error) result Lwt.t
+  val put  : base_url:string -> api_key:string -> ?timeout:float -> ?kind:kind -> string -> Yojson.Safe.t -> (Yojson.Safe.t, error) result Lwt.t
 end
 
 (* lib/arr/sonarr.ml and lib/arr/radarr.ml: typed resources mirroring the
@@ -97,7 +103,14 @@ module Client : sig
   type t
   type error = Http.error
   val error_to_string : error -> string
-  val create : Pickarr_core.Config.instance -> t
+  type timeouts = { quick_seconds : float; search_seconds : float }
+  val timeouts_of_network : Pickarr_core.Config.network -> timeouts
+  (* App_state.client builds clients from the stored network config and calls
+     set_timeouts when it changes, so a raised search timeout applies to the
+     next search without a restart. *)
+  val create : ?timeouts:timeouts -> Pickarr_core.Config.instance -> t
+  val timeouts : t -> timeouts
+  val set_timeouts : t -> timeouts -> unit
   val instance : t -> Pickarr_core.Config.instance
   val app : t -> Pickarr_core.Types.app
 
@@ -110,6 +123,8 @@ module Client : sig
   (** GET /api/v3/release?episodeId= | ?movieId= mapped to core releases.
       Never filters anything out; rejected releases are returned with
       arr_rejected=true and arr_rejection_reasons populated. *)
+  (* Uses timeouts.search_seconds: the interactive search waits for every
+     indexer and routinely takes 30-120s. *)
   val search_releases : t -> Pickarr_core.Types.media -> (Pickarr_core.Types.release list, error) result Lwt.t
 
   (** POST /api/v3/release {guid, indexerId, (+ seriesId/episodeIds or movieId)} *)

@@ -468,6 +468,8 @@ always win after a restart — handy for Docker.
 | `PREFER_REMUX` | Soft preference |
 | `NL_PREFERENCES` | Global natural-language preferences |
 | `AUTO_MODE_ENABLED`, `AUTO_MODE_GRAB`, `AUTO_MODE_INTERVAL_SECONDS` | Automatic mode |
+| `ARR_TIMEOUT_SECONDS` | Timeout for quick Sonarr/Radarr calls, default `30` (5-900) |
+| `ARR_SEARCH_TIMEOUT_SECONDS` | Timeout for release searches and library listings, default `180` (5-900) |
 | `DATA_DIR` | Config + history directory (default `/data`, else `./data`) |
 | `STATIC_DIR` | UI assets (default `/app/static`, else `./static`) |
 | `HOST`, `PORT` | Listen address (default `0.0.0.0:8484`) |
@@ -740,6 +742,43 @@ vendor/                upstream OpenAPI specs used for verification
 The Sonarr/Radarr integration was written against the upstream OpenAPI
 specifications and source, not guessed; see
 [`docs/API_RESEARCH.md`](docs/API_RESEARCH.md) and `vendor/`.
+
+## Troubleshooting
+
+### A release search timed out
+
+```text
+HTTP 502 · Radarr: release search failed for Come and See (1985):
+connection error: timed out after 180s waiting for the release search
+(Sonarr/Radarr search all indexers; raise network.arr_search_timeout_seconds
+if your indexers are slow) (http://radarr:7878/api/v3/release?movieId=440)
+```
+
+Pickarr searches by asking Sonarr/Radarr for an *interactive* search
+(`GET /api/v3/release`). That call does not return until every enabled indexer
+has answered or Prowlarr has given up on it, which routinely takes 30-120
+seconds and occasionally much longer. Pickarr therefore uses two timeouts,
+both under *Instances → Connection timeouts* (or `ARR_TIMEOUT_SECONDS` /
+`ARR_SEARCH_TIMEOUT_SECONDS`):
+
+| Setting | Default | Applies to |
+| --- | --- | --- |
+| `network.arr_timeout_seconds` | 30 s | status, movie, episode, tags, profiles, wanted, queue, history, grab |
+| `network.arr_search_timeout_seconds` | 180 s | `GET /api/v3/release` and whole-library listings |
+
+If searches still time out, raise the search timeout (up to 900 s) — the new
+value applies to the next search, no restart needed. It is worth checking
+*why* the search is slow first: in Prowlarr, **Indexers → Test All** and
+remove or disable the ones that are timing out, since one dead indexer holds
+up the whole search. A timeout on the *read* side instead (the message names
+`network.arr_timeout_seconds`) usually means the instance is unreachable or
+overloaded rather than slow at searching.
+
+### Nothing happens when the page says "searching…"
+
+That status line waits for the same interactive search, so a minute or two of
+apparent inactivity is normal. Pickarr itself imposes no response deadline
+beyond the search timeout above.
 
 ## Limitations
 

@@ -211,6 +211,19 @@
           <button id="save-instances" class="primary">Save instances</button>
           <span id="instances-status" class="result"></span>
         </p>
+
+        <h2>Connection timeouts</h2>
+        <p class="hint">
+          A release search makes Sonarr/Radarr query every indexer through
+          Prowlarr and commonly takes a minute or more, so it gets its own,
+          much longer timeout. Raise it if searches fail with
+          <em>timed out</em>.
+        </p>
+        <div id="network-form" class="form-grid"></div>
+        <p>
+          <button id="save-network" class="primary">Save timeouts</button>
+          <span id="network-status" class="result"></span>
+        </p>
       </section>
 
       <!-- ---------------------------------------------------------- -->

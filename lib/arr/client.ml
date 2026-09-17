@@ -23,8 +23,21 @@ type library_item = {
   li_title_slug : string option;
 }
 
+(** How long the two classes of *arr call may take.  See
+    {!Pickarr_core.Config.network}. *)
+type timeouts = { quick_seconds : float; search_seconds : float }
+
+let timeouts_of_network (n : C.network) =
+  {
+    quick_seconds = float_of_int n.C.arr_timeout_seconds;
+    search_seconds = float_of_int n.C.arr_search_timeout_seconds;
+  }
+
+let default_timeouts = timeouts_of_network C.default_network
+
 type t = {
   inst : C.instance;
+  mutable timeouts : timeouts;
   mutable library : (float * library_item list) option;
       (** The whole series/movie list with the unix time it was fetched.  The
           library browser searches locally, so one listing serves many
@@ -35,7 +48,21 @@ type t = {
 type error = Http.error
 
 let error_to_string = Http.error_to_string
-let create inst = { inst; library = None }
+
+(* The quick-call timeout is the transport default rather than a per-call
+   argument: it applies to every one of the ~25 *arr endpoints and comes from
+   a single configuration value, so threading it through each of them would
+   add noise without adding expressiveness. *)
+let set_timeouts t timeouts =
+  t.timeouts <- timeouts;
+  Http.timeout_seconds := timeouts.quick_seconds
+
+let create ?(timeouts = default_timeouts) inst =
+  let t = { inst; timeouts; library = None } in
+  set_timeouts t timeouts;
+  t
+
+let timeouts t = t.timeouts
 let instance t = t.inst
 let app t = t.inst.C.inst_app
 
@@ -255,17 +282,21 @@ let search_releases t (media : T.media) =
         | "season", Some sid, Some sn -> Some (sid, sn)
         | _ -> None
       in
+      let timeout = t.timeouts.search_seconds in
       let* r =
         match season_search with
         | Some (series_id, season_number) ->
-            Sonarr.releases_for_season ~base_url ~api_key ~series_id ~season_number
-        | None -> Sonarr.releases_for_episode ~base_url ~api_key media.T.media_id
+            Sonarr.releases_for_season ~base_url ~api_key ~timeout ~series_id ~season_number ()
+        | None -> Sonarr.releases_for_episode ~base_url ~api_key ~timeout media.T.media_id
       in
       match r with
       | Error e -> Lwt.return (Error e)
       | Ok l -> Lwt.return (Ok (List.map Mapping.release_of_sonarr l)))
   | T.Radarr -> (
-      let* r = Radarr.releases_for_movie ~base_url ~api_key media.T.media_id in
+      let* r =
+        Radarr.releases_for_movie ~base_url ~api_key ~timeout:t.timeouts.search_seconds
+          media.T.media_id
+      in
       match r with
       | Error e -> Lwt.return (Error e)
       | Ok l -> Lwt.return (Ok (List.map Mapping.release_of_radarr l)))
@@ -632,16 +663,19 @@ let library ?(max_age = library_max_age) ?(now = Unix.gettimeofday) t =
   | Some items -> ok items
   | None -> (
       let base_url = base t and api_key = key t in
+      (* Listing every series/movie can take tens of seconds on a large
+         library, so it gets the search timeout rather than the quick one. *)
+      let timeout = t.timeouts.search_seconds in
       let* items =
         match app t with
         | T.Sonarr ->
             Lwt.map
               (Result.map (List.map library_item_of_series))
-              (Sonarr.all_series ~base_url ~api_key ())
+              (Sonarr.all_series ~base_url ~api_key ~timeout ())
         | T.Radarr ->
             Lwt.map
               (Result.map (List.map library_item_of_movie))
-              (Radarr.all_movies ~base_url ~api_key ())
+              (Radarr.all_movies ~base_url ~api_key ~timeout ())
       in
       match items with
       | Error e -> Lwt.return (Error e)

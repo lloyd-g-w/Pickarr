@@ -159,6 +159,22 @@ type seasons = {
           individually. *)
 }
 
+(** HTTP timeouts for the Sonarr/Radarr calls.
+
+    Two values, because the *arr API mixes instant reads with one very slow
+    endpoint: [GET /api/v3/release] is the interactive search, which asks
+    every indexer (through Prowlarr) and routinely takes 30-120s. One shared
+    timeout would either abort searches or let a dead instance hang every
+    page. *)
+type network = {
+  arr_timeout_seconds : int;
+      (** Quick calls: system/status, movie, episode, tag, qualityprofile,
+          wanted, queue, history, grab. Default 30. *)
+  arr_search_timeout_seconds : int;
+      (** Release searches ([GET /api/v3/release]) and whole-library
+          listings, which are slow on large libraries. Default 180. *)
+}
+
 (** Seerr / Overseerr / Jellyseerr request integration. *)
 type seerr = {
   seerr_enabled : bool;
@@ -182,6 +198,7 @@ type t = {
   automatic : automatic;
   seasons : seasons;
   seerr : seerr;
+  network : network;
   log_level : string;
 }
 
@@ -285,6 +302,8 @@ let default_automatic =
 let default_seasons =
   { prefer_packs = true; min_missing_fraction = 0.5; fallback_to_episodes = true }
 
+let default_network = { arr_timeout_seconds = 30; arr_search_timeout_seconds = 180 }
+
 let default_seerr =
   {
     seerr_enabled = false;
@@ -308,6 +327,7 @@ let default =
     automatic = default_automatic;
     seasons = default_seasons;
     seerr = default_seerr;
+    network = default_network;
     log_level = "info";
   }
 
@@ -649,6 +669,28 @@ let seasons_of_yojson ?(d = default_seasons) (j : J.t) : seasons =
     fallback_to_episodes = get_bool "fallback_to_episodes" d.fallback_to_episodes j;
   }
 
+(* Timeouts outside this range are almost certainly a typo, and a tiny value
+   would make every call fail. *)
+let min_timeout_seconds = 5
+let max_timeout_seconds = 900
+
+let clamp_timeout (v : int) : int =
+  min max_timeout_seconds (max min_timeout_seconds v)
+
+let network_to_yojson (n : network) : J.t =
+  `Assoc
+    [
+      ("arr_timeout_seconds", `Int n.arr_timeout_seconds);
+      ("arr_search_timeout_seconds", `Int n.arr_search_timeout_seconds);
+    ]
+
+let network_of_yojson ?(d = default_network) (j : J.t) : network =
+  {
+    arr_timeout_seconds = clamp_timeout (get_int "arr_timeout_seconds" d.arr_timeout_seconds j);
+    arr_search_timeout_seconds =
+      clamp_timeout (get_int "arr_search_timeout_seconds" d.arr_search_timeout_seconds j);
+  }
+
 let seerr_to_yojson (s : seerr) : J.t =
   `Assoc
     [
@@ -699,6 +741,7 @@ let to_yojson ?(redact = false) (c : t) : J.t =
       ("automatic", automatic_to_yojson c.automatic);
       ("seasons", seasons_to_yojson c.seasons);
       ("seerr", seerr_to_yojson { c.seerr with seerr_api_key = red c.seerr.seerr_api_key });
+      ("network", network_to_yojson c.network);
       ("log_level", `String c.log_level);
     ]
 
@@ -726,6 +769,7 @@ let of_yojson ?(d = default) (j : J.t) : (t, string) result =
           automatic = automatic_of_yojson ~d:d.automatic (sub "automatic");
           seasons = seasons_of_yojson ~d:d.seasons (sub "seasons");
           seerr = seerr_of_yojson ~d:d.seerr (sub "seerr");
+          network = network_of_yojson ~d:d.network (sub "network");
           log_level = get_str "log_level" d.log_level j;
         }
 
@@ -779,6 +823,9 @@ let patch (existing : t) (j : J.t) : (t, string) result =
     - NL_PREFERENCES
     - AUTO_MODE_ENABLED, AUTO_MODE_GRAB, AUTO_MODE_INTERVAL_SECONDS
     - SEERR_URL, SEERR_API_KEY, SEERR_ENABLED, SEERR_AUTO_APPROVE, SEERR_GRAB
+    - ARR_TIMEOUT_SECONDS (quick Sonarr/Radarr calls, default 30)
+    - ARR_SEARCH_TIMEOUT_SECONDS (release searches and library listings,
+      default 180; raise it when your indexers are slow)
     - LOG_LEVEL
 
     [getenv] is injected for testability. *)
@@ -901,6 +948,14 @@ let apply_env ?(getenv = Sys.getenv_opt) (c : t) : t =
          seerr_auto_approve = bool_env "SEERR_AUTO_APPROVE" c.seerr.seerr_auto_approve;
          seerr_grab = bool_env "SEERR_GRAB" c.seerr.seerr_grab;
        });
+    network =
+      {
+        arr_timeout_seconds =
+          clamp_timeout (int_env "ARR_TIMEOUT_SECONDS" c.network.arr_timeout_seconds);
+        arr_search_timeout_seconds =
+          clamp_timeout
+            (int_env "ARR_SEARCH_TIMEOUT_SECONDS" c.network.arr_search_timeout_seconds);
+      };
     log_level = str_env "LOG_LEVEL" c.log_level;
   }
 

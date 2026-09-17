@@ -599,6 +599,154 @@ let test_grab_response_handling () =
   | Ok () -> Alcotest.fail "409 must not count as a grab"
 
 (* ------------------------------------------------------------------ *)
+(* Timeouts (regression: a 30s timeout aborted every release search)   *)
+(* ------------------------------------------------------------------ *)
+
+(* A server that waits [delay] seconds before replying, standing in for an
+   *arr instance that is still waiting on its indexers.  [f] receives the base
+   URL; the responder runs detached so that a client which gives up early does
+   not make the test wait for the full delay. *)
+let with_slow_server ~(delay : float) ~(body : string)
+    (f : string -> ('a, A.Http.error) result Lwt.t) : ('a, A.Http.error) result =
+  let socket = Lwt_unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
+  Lwt_unix.setsockopt socket Unix.SO_REUSEADDR true;
+  Lwt_main.run (Lwt_unix.bind socket (Unix.ADDR_INET (Unix.inet_addr_loopback, 0)));
+  Lwt_unix.listen socket 1;
+  let port =
+    match Lwt_unix.getsockname socket with
+    | Unix.ADDR_INET (_, p) -> p
+    | Unix.ADDR_UNIX _ -> Alcotest.fail "expected an inet socket"
+  in
+  let respond () =
+    (* Every failure is swallowed: once the client has timed out the writes
+       fail, and an escaping exception would reach Lwt's async hook. *)
+    Lwt.catch
+      (fun () ->
+        let open Lwt.Infix in
+        Lwt_unix.accept socket >>= fun (client, _) ->
+        let buf = Bytes.create 65536 in
+        Lwt_unix.read client buf 0 (Bytes.length buf) >>= fun _ ->
+        Lwt_unix.sleep delay >>= fun () ->
+        let response =
+          Printf.sprintf
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \
+             %d\r\nConnection: close\r\n\r\n%s"
+            (String.length body) body
+        in
+        let bytes = Bytes.of_string response in
+        Lwt_unix.write client bytes 0 (Bytes.length bytes) >>= fun _ -> Lwt_unix.close client)
+      (fun _ -> Lwt.return_unit)
+  in
+  let result =
+    Lwt_main.run
+      (Lwt.async respond;
+       f (Printf.sprintf "http://127.0.0.1:%d" port))
+  in
+  (try Lwt_main.run (Lwt_unix.close socket) with _ -> ());
+  result
+
+let contains ~needle haystack =
+  let n = String.length needle and h = String.length haystack in
+  let rec go i = i + n <= h && (String.sub haystack i n = needle || go (i + 1)) in
+  n = 0 || go 0
+
+(* The quick timeout must not be applied to a release search: Sonarr/Radarr
+   answer one only after every indexer has replied, which is what produced
+   "timed out after 30s ... /api/v3/release?movieId=440". *)
+let test_search_timeout_is_separate () =
+  let delay = 0.6 in
+  (* A quick call gives up early and says which setting to raise. *)
+  (match
+     with_slow_server ~delay ~body:"{}" (fun base_url ->
+         A.Http.get ~base_url ~api_key:"k" ~timeout:0.2 "/api/v3/movie/440")
+   with
+  | Ok _ -> Alcotest.fail "a 0.2s timeout must not survive a 0.6s delay"
+  | Error (A.Http.Connection m) ->
+      Alcotest.(check bool) ("quick timeout reports the elapsed time: " ^ m) true
+        (contains ~needle:"timed out after 0.2s" m);
+      Alcotest.(check bool) ("quick timeout names its setting: " ^ m) true
+        (contains ~needle:"network.arr_timeout_seconds" m);
+      Alcotest.(check bool) ("quick timeout keeps the url: " ^ m) true
+        (contains ~needle:"/api/v3/movie/440" m)
+  | Error e -> Alcotest.failf "expected a connection timeout, got %s" (A.Http.error_to_string e));
+  (* The same delay under the longer search timeout succeeds, and goes
+     through the real Radarr search function so that the ?timeout it passes
+     on is exercised too. *)
+  (match
+     with_slow_server ~delay ~body:{|[{"guid":"g","title":"A Movie 2160p","indexerId":2}]|}
+       (fun base_url -> A.Radarr.releases_for_movie ~base_url ~api_key:"k" ~timeout:5.0 440)
+   with
+  | Error e ->
+      Alcotest.failf "a 5s search timeout must survive a 0.6s delay, got %s"
+        (A.Http.error_to_string e)
+  | Ok releases -> Alcotest.(check int) "the slow search still decoded" 1 (List.length releases));
+  (* And when even the search timeout is too short, the message points at the
+     search setting rather than looking like a dead connection. *)
+  match
+    with_slow_server ~delay ~body:"[]" (fun base_url ->
+        A.Radarr.releases_for_movie ~base_url ~api_key:"k" ~timeout:0.2 440)
+  with
+  | Ok _ -> Alcotest.fail "a 0.2s search timeout must not survive a 0.6s delay"
+  | Error (A.Http.Connection m) ->
+      Alcotest.(check bool) ("search timeout explains the wait: " ^ m) true
+        (contains ~needle:"waiting for the release search" m);
+      Alcotest.(check bool) ("search timeout names its setting: " ^ m) true
+        (contains ~needle:"network.arr_search_timeout_seconds" m);
+      Alcotest.(check bool) ("search timeout mentions the indexers: " ^ m) true
+        (contains ~needle:"search all indexers" m)
+  | Error e -> Alcotest.failf "expected a connection timeout, got %s" (A.Http.error_to_string e)
+
+(* The wording is pure, so the exact text is asserted without sockets. *)
+let test_timeout_message_wording () =
+  let quick = A.Http.timeout_message ~kind:`Quick ~seconds:30. ~url:"http://arr/api/v3/movie/1" in
+  Alcotest.(check string) "quick"
+    "timed out after 30s (raise network.arr_timeout_seconds if Sonarr/Radarr is slow to \
+     respond) (http://arr/api/v3/movie/1)"
+    quick;
+  let search =
+    A.Http.timeout_message ~kind:`Search ~seconds:180.
+      ~url:"http://arr/api/v3/release?movieId=440"
+  in
+  Alcotest.(check string) "search"
+    "timed out after 180s waiting for the release search (Sonarr/Radarr search all indexers; \
+     raise network.arr_search_timeout_seconds if your indexers are slow) \
+     (http://arr/api/v3/release?movieId=440)"
+    search
+
+(* The timeouts a client uses come from the network config, unscaled. *)
+let test_client_timeouts_from_config () =
+  let net = { Pickarr_core.Config.arr_timeout_seconds = 45; arr_search_timeout_seconds = 300 } in
+  let t = A.Client.timeouts_of_network net in
+  Alcotest.(check (float 0.001)) "quick" 45. t.A.Client.quick_seconds;
+  Alcotest.(check (float 0.001)) "search" 300. t.A.Client.search_seconds;
+  let d = A.Client.timeouts_of_network Pickarr_core.Config.default_network in
+  Alcotest.(check (float 0.001)) "default quick" 30. d.A.Client.quick_seconds;
+  Alcotest.(check (float 0.001)) "default search" 180. d.A.Client.search_seconds;
+  (* set_timeouts also moves the process-wide default for quick calls. *)
+  let inst =
+    {
+      Pickarr_core.Config.inst_id = "r";
+      inst_name = "Radarr";
+      inst_app = T.Radarr;
+      inst_url = "http://127.0.0.1:1";
+      inst_api_key = "k";
+      inst_enabled = true;
+      inst_nl_preferences = "";
+      inst_automatic = false;
+    }
+  in
+  let previous = !A.Http.timeout_seconds in
+  let c = A.Client.create ~timeouts:t inst in
+  Alcotest.(check (float 0.001)) "client keeps its timeouts" 300.
+    (A.Client.timeouts c).A.Client.search_seconds;
+  Alcotest.(check (float 0.001)) "create applied the quick default" 45.
+    !A.Http.timeout_seconds;
+  A.Client.set_timeouts c d;
+  Alcotest.(check (float 0.001)) "set_timeouts applied the quick default" 30.
+    !A.Http.timeout_seconds;
+  A.Http.timeout_seconds := previous
+
+(* ------------------------------------------------------------------ *)
 (* Seerr request API                                                   *)
 (* ------------------------------------------------------------------ *)
 
@@ -828,6 +976,9 @@ let tests =
     ("http join", `Quick, test_http_join);
     ("http error bodies", `Quick, test_http_error_bodies);
     ("grab response handling", `Quick, test_grab_response_handling);
+    ("search timeout is separate", `Quick, test_search_timeout_is_separate);
+    ("timeout message wording", `Quick, test_timeout_message_wording);
+    ("client timeouts from config", `Quick, test_client_timeouts_from_config);
     ("lenient decoding", `Quick, test_lenient_decoding);
   ]
 

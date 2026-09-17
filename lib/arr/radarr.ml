@@ -187,9 +187,10 @@ let movie ~base_url ~api_key id =
   let* r = Http.get ~base_url ~api_key (Printf.sprintf "/api/v3/movie/%d" id) in
   Lwt.return (map_result movie_resource_of_yojson r)
 
-(** [GET /api/v3/movie]  (the whole library) *)
-let all_movies ~base_url ~api_key () =
-  let* r = Http.get ~base_url ~api_key "/api/v3/movie" in
+(** [GET /api/v3/movie]  (the whole library).  Slow on large libraries, hence
+    [?timeout]. *)
+let all_movies ~base_url ~api_key ?timeout () =
+  let* r = Http.get ~base_url ~api_key ?timeout ~kind:`Search "/api/v3/movie" in
   match r with
   | Error e -> Lwt.return (Error e)
   | Ok j -> (
@@ -225,12 +226,14 @@ let quality_profile ~base_url ~api_key id =
   let* r = Http.get ~base_url ~api_key (Printf.sprintf "/api/v3/qualityprofile/%d" id) in
   Lwt.return (map_result R.quality_profile_of_yojson r)
 
-(** [GET /api/v3/release?movieId=] *)
-let releases_for_movie ~base_url ~api_key movie_id =
+(** [GET /api/v3/release?movieId=]  (interactive search).  Radarr queries
+    every indexer before answering, so this needs the search timeout, not the
+    quick one. *)
+let releases_for_movie ~base_url ~api_key ?timeout movie_id =
   let* r =
     Http.get ~base_url ~api_key
       ~query:[ ("movieId", string_of_int movie_id) ]
-      "/api/v3/release"
+      ?timeout ~kind:`Search "/api/v3/release"
   in
   match r with
   | Error e -> Lwt.return (Error e)

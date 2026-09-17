@@ -1361,6 +1361,62 @@ let test_history_links_round_trip () =
                     (Yojson.Safe.to_string old.Store.h_links)
       | Error m -> Alcotest.fail m)
 
+(* ------------------------------------------------------------------ *)
+(* App_state: timeouts follow the configuration                        *)
+(* ------------------------------------------------------------------ *)
+
+let radarr_instance =
+  {
+    Config.inst_id = "radarr";
+    inst_name = "Radarr";
+    inst_app = Types.Radarr;
+    inst_url = "http://radarr:7878";
+    inst_api_key = "k";
+    inst_enabled = true;
+    inst_nl_preferences = "";
+    inst_automatic = false;
+  }
+
+let app_state_of dir =
+  let store = store_of dir in
+  let auth =
+    match run (Auth.create ~getenv:(fun _ -> None) ~data_dir:dir ()) with
+    | Ok a -> a
+    | Error e -> Alcotest.failf "auth creation failed: %s" e
+  in
+  (store, Pickarr_server.App_state.create ~getenv:(fun _ -> None) store auth)
+
+(* Raising the search timeout must apply to the next search without a
+   restart, and must not throw away the client's cached library listing. *)
+let test_app_state_client_tracks_network_config () =
+  let dir = temp_dir "pickarr-network" in
+  let store, state = app_state_of dir in
+  let set net =
+    match run (Store.update store (fun c -> Ok { c with Config.network = net })) with
+    | Ok _ -> ()
+    | Error e -> Alcotest.failf "config update failed: %s" e
+  in
+  set { Config.arr_timeout_seconds = 30; arr_search_timeout_seconds = 180 };
+  let c1 = Pickarr_server.App_state.client state radarr_instance in
+  Alcotest.(check (float 0.001)) "quick timeout from config" 30.
+    (Client.timeouts c1).Client.quick_seconds;
+  Alcotest.(check (float 0.001)) "search timeout from config" 180.
+    (Client.timeouts c1).Client.search_seconds;
+  set { Config.arr_timeout_seconds = 45; arr_search_timeout_seconds = 600 };
+  let c2 = Pickarr_server.App_state.client state radarr_instance in
+  Alcotest.(check (float 0.001)) "new quick timeout" 45.
+    (Client.timeouts c2).Client.quick_seconds;
+  Alcotest.(check (float 0.001)) "new search timeout" 600.
+    (Client.timeouts c2).Client.search_seconds;
+  Alcotest.(check bool) "the same client is reused, so its library cache survives" true
+    (c1 == c2);
+  (* A changed URL still replaces the client entirely. *)
+  let moved = { radarr_instance with Config.inst_url = "http://elsewhere:7878" } in
+  let c3 = Pickarr_server.App_state.client state moved in
+  Alcotest.(check bool) "a new connection gets a new client" false (c2 == c3);
+  Alcotest.(check (float 0.001)) "and the current timeouts" 600.
+    (Client.timeouts c3).Client.search_seconds
+
 let () =
   Alcotest.run "pickarr-server"
     [
@@ -1370,6 +1426,11 @@ let () =
           Alcotest.test_case "round trip" `Quick test_store_round_trip;
           Alcotest.test_case "env overrides" `Quick test_store_env_overrides;
           Alcotest.test_case "rejects invalid config" `Quick test_store_rejects_bad_config;
+        ] );
+      ( "app_state",
+        [
+          Alcotest.test_case "client tracks network config" `Quick
+            test_app_state_client_tracks_network_config;
         ] );
       ( "history",
         [

@@ -2,7 +2,7 @@
 
 Not part of `dune test`: these drive the **real** binary against fake Sonarr,
 Radarr, Seerr and LLM servers, and check the browser UI with a DOM stub. They
-need `python3` and `node`, and they bind ports 19100-19452 on loopback.
+need `python3` and `node`, and they bind ports 19100-19461 on loopback.
 
 Build first, from the repository root, and run them from anywhere — each
 script resolves the repository from its own location:
@@ -108,6 +108,21 @@ accepted with `approve:true` (approved in Seerr first), one season selected as
 a pack, the whole request as a series run, the new season grab route, and that
 a non-pack release is refused with 409.
 
+## Release-search timeout
+
+```bash
+bash test/smoke/timeout_e2e.sh
+```
+
+Reproduces the reported `HTTP 502 - Radarr: release search failed ...
+timed out after 30s (.../api/v3/release?movieId=440)` against a Radarr whose
+interactive search sleeps, and asserts the two-timeout fix: the configured
+values are stored and clamped, a quick call is unaffected by a short read
+timeout, a 2 s search succeeds under a 10 s search timeout, an 8 s search
+fails under a 5 s one with a 502 naming
+`network.arr_search_timeout_seconds`, and raising the setting fixes it
+without restarting. Takes about 20 s, most of it deliberate waiting.
+
 ## UI
 
 ```bash
@@ -133,3 +148,4 @@ node test/smoke/check_element_ids.js
 | `fake_radarr_seerr.py` | Radarr for the Seerr tests, recording searches and grabs to a JSON state file |
 | `fake_sonarr_magnet.py` | Sonarr whose releases have magnet-link guids (`fixtures/sonarr_releases_magnet.json`) |
 | `fake_llm.py` | OpenAI-compatible server answering `short`, `mangled`, `titles`, `percent`, `prose` or `truncated` |
+| `fake_slow_radarr.py` | Radarr whose `GET /api/v3/release` sleeps; the delay is changeable at `/__delay?seconds=`, calls recorded at `/__state` |

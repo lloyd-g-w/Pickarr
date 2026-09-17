@@ -122,3 +122,104 @@ the caller asked for. Status codes: 200, 400 (bad `release_id`/media id), 404
   across searches, so grab-by-id works for those too — but such a release has
   no guid to grab with and is rejected up front with
   `"has no guid, so Sonarr/Radarr cannot grab it"`.
+
+---
+
+# 2026-09-17 — "the grab button doesn't always work"
+
+Reported symptom: grabbing works sometimes and not other times. No error text
+was supplied, so every way a grab can fail or *appear* to fail was enumerated,
+reproduced against the real binary, and fixed.
+
+Method: `test/smoke/fake_grab_arr.py` is a scriptable fake Sonarr/Radarr whose
+`POST /api/v3/release` can answer each of the verified failure modes
+(§3.5 of `docs/API_RESEARCH.md`), and whose `GET /api/v3/release` can drop a
+release from later searches. `test/smoke/grab_paths_e2e.sh` drives the real
+binary through eleven scenarios and asserts on what the fake received.
+
+## Root cause of the intermittency
+
+**A grab re-ran the release search and looked the chosen release up in the new
+result.** Indexer searches are not reproducible: an indexer that timed out on
+the second call, a release that has since been dropped, or Sonarr/Radarr's own
+guid de-duplication picking a different `indexerId`, all made the release
+absent from the second search. Pickarr then answered
+
+```
+404 no release with id "..." is currently offered for ... (search again and retry)
+```
+
+even though Sonarr/Radarr still had the release in their 30-minute cache and
+would have grabbed it. Nothing was ever sent to the *arr.
+
+Proof, same fake (`--scenario search_drops`: the POST always succeeds, the
+second search returns `[]`), same request, two binaries:
+
+| binary | HTTP | grabbed | `POST /api/v3/release` sent | searches |
+| --- | --- | --- | --- | --- |
+| before (`59d8f15`) | 404 | — | **0** | 2 |
+| after | 200 | true | 1 | 1 |
+
+**Fix:** `lib/server/search_cache.ml` remembers what the last search offered
+per (instance, media) for 30 minutes — the same window as the *arr's own
+release cache. A grab uses the release the user actually saw and sends it
+straight to Sonarr/Radarr; no second search happens at all (scenario (a)
+asserts `searches == 1`). A search still runs when nothing is remembered
+(Pickarr restarted, or the window elapsed), and the cache is cleared whenever
+the configuration changes, so candidates filtered under old rules can never be
+grabbed under new ones.
+
+## The other defects found, each with a scenario
+
+| # | Severity | Defect | Fix | Scenario |
+| --- | --- | --- | --- | --- |
+| 1 | real bug | re-search could not find the release → grab refused although the *arr had it | search cache, grab directly | (k) |
+| 2 | real bug | a 404 "couldn't find requested release in cache" was final, although a fresh search refills that cache and makes the grab work | one re-search + retry, reported in `grab_notes` | (b), (c) |
+| 3 | real bug | a 404 "…will need to be manually provided" was final. Sonarr/Radarr ask for `shouldOverride` when they cannot map a release (typically a season pack) to the series/episodes or movie | retry with `shouldOverride`, the ids, and the release's own `quality`/`languages` taken from the raw `ReleaseResource` (§3.3) | (d), (e) |
+| 4 | real bug | `indexerId: 0` (what the *arr sends when a release has no indexer) was posted anyway, producing an opaque failure | refused before the request, with a message, and nothing is sent | (f) |
+| 5 | silent | HTTP 200 only means *accepted*; the download client can still refuse the release, and Pickarr reported "grabbed" | after a successful grab `GET /api/v3/queue/details` is polled twice (1 s, 3 s) and the result carries `in the download queue via qBittorrent` or `queue warning: <reason>`; never turns a success into a failure | (a), (g) |
+| 6 | cosmetic | no way to tell which path a grab took | every attempt logs instance, media, title, truncated guid, `indexerId`, path, HTTP status and the *arr message; `grab_notes` shows the same on the card | all |
+| 7 | UX | a long grab looked dead and double-clicks fired twice | the button disables itself, says "grabbing…", and is restored on failure; the status line explains the wait | — |
+| 8 | UX | a 401 after the session expired showed `HTTP 401 · unauthorized` | `api()` throws "session expired — log in again and retry" before redirecting | — |
+
+## Verified *not* broken
+
+- **Concurrency (H4).** A search and two grabs for the same media, issued at
+  once: all three answer 200, no 500s, no shared-state corruption. The *arr
+  release cache is additive (keyed per release), so a concurrent search does
+  not evict the entry a grab needs. Two grab requests do send two POSTs; the
+  UI prevents that by disabling the button, and Sonarr/Radarr reject a
+  duplicate themselves.
+- **Grab bodies.** Sonarr `{guid, indexerId, episodeId}` for an episode and
+  `{guid, indexerId, seriesId}` for a season/series; Radarr
+  `{guid, indexerId, movieId}`. Only `guid` (non-empty) and `indexerId`
+  (valid) are validated by the *arr (§3.1).
+- **Hard rules still outrank a manual pick.** Grabbing a hard-rejected
+  release is refused with 409 and no POST, whether the candidates came from
+  the cache or a fresh search (scenario (i)).
+- **409 from the indexer is not retried** (scenario (h)), and an unknown
+  release id is a clean 404 telling the user to search again (scenario (j)).
+
+## API surface
+
+`POST /api/grab/:instance_id/:media_id` and
+`POST /api/grab/:instance_id/season/:series_id/:season_number` now accept
+
+```json
+{ "release_id": "...", "guid": "...", "indexer_id": 4 }
+```
+
+`guid` and `indexer_id` are optional hints from the same selection response.
+They only *identify* the release among the candidates Pickarr has searched and
+checked — they are never used to grab something that was not validated — which
+matters for releases without a guid, whose id is a digest of title and indexer
+and therefore changes when the *arr reports a different `indexerId`.
+
+## Residual, by design
+
+- Two deliberate grabs of the same release still send two POSTs; Sonarr/Radarr
+  de-duplicate.
+- The queue check adds up to ~4 s to a successful grab. It is best-effort: if
+  the queue cannot be read, the grab is still reported as successful.
+- `grab_notes` is not persisted in the history file; history keeps
+  `grabbed`/`grab_error` as before.

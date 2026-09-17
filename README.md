@@ -780,15 +780,45 @@ That status line waits for the same interactive search, so a minute or two of
 apparent inactivity is normal. Pickarr itself imposes no response deadline
 beyond the search timeout above.
 
+### A grab did not work
+
+Every grab reports what it did. The result card shows one line under the
+badges, and the same text is in the *Logs* tab with the release title, the
+truncated guid and the `indexerId`:
+
+| Note | Meaning |
+| --- | --- |
+| `grabbed directly · in the download queue via qBittorrent` | the normal case: accepted, and the download client took it |
+| `searched again, then grabbed` | the release had left Sonarr/Radarr's 30-minute release cache, so Pickarr searched again and retried |
+| `retried with shouldOverride` | Sonarr/Radarr could not map the release (usually a season pack) to the episodes or movie themselves, so Pickarr forced the mapping with the release's own quality and languages |
+| `queue warning: …` | Sonarr/Radarr accepted the grab but the download client or import reported a problem — the release *was* sent, so look in the *arr's Activity → Queue |
+| `not seen in the download queue yet` | accepted, but nothing appeared within a few seconds. Usually harmless (usenet/torrent add latency); if it never appears, check the download client settings in Sonarr/Radarr |
+| `not sent to sonarr` + `release has no indexerId…` | the release cannot be grabbed at all: Sonarr/Radarr identify a release by `guid` + `indexerId` and this one has neither |
+
+Failures keep the *arr's own words, for example
+`HTTP 409: Getting release from indexer failed` (the indexer refused the
+download; try another release) or
+`HTTP 404: Couldn't find requested release in cache, try searching again`
+(only after a retry has already failed — the release is genuinely gone).
+
+If the button says *Grab failed: HTTP 404 · no release with id … is currently
+offered*, the page is older than 30 minutes or Pickarr restarted: search again
+and grab from the fresh list.
+
+Grabbing can take a few seconds because Pickarr confirms the download queue
+afterwards. The button disables itself while that happens, so a second click
+cannot send a second grab.
+
 ## Limitations
 
 * Sonarr/Radarr must allow interactive search on the indexers you want
   Pickarr to use; `GET /api/v3/release` is the interactive-search path.
 * A release-grab request must use a `guid` + `indexerId` that the instance
-  still has in its interactive-search cache, whose TTL is 30 minutes. Pickarr
-  always grabs within seconds of its own search (every *Grab* button in the UI
-  re-runs the search server-side rather than reusing an earlier one), so this
-  only matters if you drive the API yourself and delay the grab.
+  still has in its interactive-search cache, whose TTL is 30 minutes. The
+  *Grab* buttons send the release the last search offered and, if the instance
+  reports that its cache has expired, search again and retry once — so this
+  only bites when the page is older than 30 minutes, or when you drive the API
+  yourself and delay the grab.
 * Codec, audio, HDR and Dolby Vision are parsed from release titles, because
   the *arr APIs do not expose them. Titles lie sometimes; hard rules that
   depend on them are best-effort by nature (Sonarr/Radarr custom formats have

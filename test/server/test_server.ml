@@ -12,6 +12,8 @@ module Seerr_sync = Pickarr_server.Seerr_sync
 module Fulfil = Pickarr_server.Fulfil
 module Library = Pickarr_server.Library
 module Client = Pickarr_arr.Client
+module Grab = Pickarr_server.Grab
+module Search_cache = Pickarr_server.Search_cache
 
 let temp_dir prefix =
   let dir =
@@ -203,6 +205,7 @@ let result_of ?(grabbed = false) ?(selected = Some scored) () : Types.selection_
     llm = None;
     grabbed;
     grab_error = None;
+    grab_notes = [];
     duration_ms = 12;
   }
 
@@ -337,6 +340,151 @@ let test_release_id_parsing () =
   match Selection.release_id_of_json `Null with
   | Error _ -> ()
   | Ok _ -> Alcotest.fail "an empty body must be rejected"
+
+(* The optional guid / indexer_id hints the UI sends with a grab: they
+   identify the release when its id no longer matches, and must never be
+   required (regression: docs/GRAB_BUG_NOTES.md). *)
+let test_grab_target_parsing () =
+  let parse s = Selection.grab_target_of_json (Yojson.Safe.from_string s) in
+  (match parse {|{"release_id":"abc","guid":"magnet:?xt=urn:btih:AAA","indexer_id":4}|} with
+  | Error e -> Alcotest.fail e
+  | Ok t ->
+      Alcotest.(check string) "id" "abc" t.Selection.target_release_id;
+      Alcotest.(check (option string)) "guid" (Some "magnet:?xt=urn:btih:AAA") t.target_guid;
+      Alcotest.(check (option int)) "indexer" (Some 4) t.target_indexer_id);
+  (* The hints are optional, and a useless indexerId of 0 is dropped rather
+     than believed. *)
+  (match parse {|{"release_id":"abc"}|} with
+  | Error e -> Alcotest.fail e
+  | Ok t ->
+      Alcotest.(check (option string)) "no guid" None t.target_guid;
+      Alcotest.(check (option int)) "no indexer" None t.target_indexer_id);
+  (match parse {|{"release_id":"abc","guid":"","indexer_id":0}|} with
+  | Error e -> Alcotest.fail e
+  | Ok t ->
+      Alcotest.(check (option string)) "empty guid ignored" None t.target_guid;
+      Alcotest.(check (option int)) "indexerId 0 ignored" None t.target_indexer_id);
+  (* A JSON-encoded number still parses, because a form post sends strings. *)
+  (match parse {|{"release_id":"abc","indexer_id":"7"}|} with
+  | Error e -> Alcotest.fail e
+  | Ok t -> Alcotest.(check (option int)) "string indexer" (Some 7) t.target_indexer_id);
+  List.iter
+    (fun body ->
+      match parse body with
+      | Error _ -> ()
+      | Ok _ -> Alcotest.failf "expected %s to be rejected" body)
+    [ "{}"; {|{"release_id":""}|}; {|{"release_id":7}|}; "[1,2]" ]
+
+let test_grab_target_matches () =
+  let target =
+    {
+      Selection.target_release_id = "id-1";
+      target_guid = Some "guid-1";
+      target_indexer_id = Some 4;
+    }
+  in
+  let with_ ?(id = "id-1") ?guid ?indexer () =
+    { release with Types.id; guid; indexer_id = indexer }
+  in
+  Alcotest.(check bool) "same id matches" true (Selection.target_matches target (with_ ()));
+  (* The id changed (a release without a guid is identified by a digest of
+     title and indexer), but the guid and indexer still identify it. *)
+  Alcotest.(check bool) "guid and indexer match" true
+    (Selection.target_matches target (with_ ~id:"other" ~guid:"guid-1" ~indexer:4 ()));
+  (* Same guid from a different indexer is a different cache entry. *)
+  Alcotest.(check bool) "guid but wrong indexer" false
+    (Selection.target_matches target (with_ ~id:"other" ~guid:"guid-1" ~indexer:9 ()));
+  Alcotest.(check bool) "different guid" false
+    (Selection.target_matches target (with_ ~id:"other" ~guid:"guid-2" ~indexer:4 ()));
+  (* Without a hint only the id counts. *)
+  let bare =
+    { Selection.target_release_id = "id-1"; target_guid = None; target_indexer_id = None }
+  in
+  Alcotest.(check bool) "no hints, wrong id" false
+    (Selection.target_matches bare (with_ ~id:"other" ~guid:"guid-1" ()))
+
+(* What the download-queue check reports after a grab was accepted. *)
+let test_queue_note () =
+  let detail ?status ?tracked ?error ?(messages = []) ?client () =
+    {
+      Pickarr_arr.Resources.qd_id = 1;
+      qd_title = Some "Some.Release";
+      qd_status = status;
+      qd_tracked_status = tracked;
+      qd_tracked_state = None;
+      qd_error_message = error;
+      qd_status_messages = messages;
+      qd_download_client = client;
+      qd_protocol = Some "torrent";
+      qd_episode_id = None;
+      qd_series_id = None;
+      qd_movie_id = None;
+    }
+  in
+  Alcotest.(check (option string)) "nothing in the queue yet" None (Grab.queue_note_of_details []);
+  (match
+     Grab.queue_note_of_details
+       [ detail ~status:"downloading" ~tracked:"ok" ~client:"qBittorrent" () ]
+   with
+  | Some note ->
+      Alcotest.(check bool) "names the client" true
+        (contains ~needle:"qBittorrent" note && contains ~needle:"download queue" note)
+  | None -> Alcotest.fail "a downloading item must be reported");
+  (* A warning is the case the user cares about: the *arr accepted the grab
+     but the download will not import. *)
+  (match
+     Grab.queue_note_of_details
+       [
+         detail ~status:"warning" ~tracked:"warning" ~error:"No files found"
+           ~messages:[ "Unable to import" ] ();
+       ]
+   with
+  | Some note ->
+      Alcotest.(check bool) "warns" true (contains ~needle:"queue warning" note);
+      Alcotest.(check bool) "keeps the reason" true (contains ~needle:"No files found" note);
+      Alcotest.(check bool) "keeps the status message" true
+        (contains ~needle:"Unable to import" note)
+  | None -> Alcotest.fail "a warning must be reported");
+  (* A failed download is a warning too, not a silent success. *)
+  match Grab.queue_note_of_details [ detail ~status:"failed" ~tracked:"error" () ] with
+  | Some note -> Alcotest.(check bool) "failed is a warning" true (contains ~needle:"warning" note)
+  | None -> Alcotest.fail "a failed item must be reported"
+
+(* The cache that lets a grab use the release the user actually saw. *)
+let test_search_cache () =
+  let cache = Search_cache.create () in
+  let scored_of id = { Types.scored = { release with Types.id }; score = 1.0; components = [] } in
+  let season n = { media with Types.media_kind = "season"; media_id = 12; season_number = Some n } in
+  Search_cache.store ~now:1000. cache ~instance_id:"sonarr" ~media:(season 2)
+    ~candidates:[ scored_of "a" ] ~rejected:[];
+  (* A different season of the same series is a different search. *)
+  Alcotest.(check bool) "season 2 found" true
+    (Search_cache.find ~now:1001. cache ~instance_id:"sonarr" ~media:(season 2) <> None);
+  Alcotest.(check bool) "season 3 not found" true
+    (Search_cache.find ~now:1001. cache ~instance_id:"sonarr" ~media:(season 3) = None);
+  (* Another instance may have its own result for the same ids. *)
+  Alcotest.(check bool) "other instance not found" true
+    (Search_cache.find ~now:1001. cache ~instance_id:"sonarr-4k" ~media:(season 2) = None);
+  (match Search_cache.find ~now:1060. cache ~instance_id:"sonarr" ~media:(season 2) with
+  | None -> Alcotest.fail "one minute old entry must still be usable"
+  | Some e ->
+      Alcotest.(check int) "candidates kept" 1 (List.length e.Search_cache.candidates);
+      Alcotest.(check (float 0.1)) "age" 60. (Search_cache.age ~now:1060. e));
+  (* Past Sonarr/Radarr's own 30-minute cache the entry is worthless. *)
+  Alcotest.(check bool) "expired after 30 minutes" true
+    (Search_cache.find ~now:(1000. +. 1801.) cache ~instance_id:"sonarr" ~media:(season 2) = None);
+  Search_cache.store ~now:2000. cache ~instance_id:"radarr" ~media
+    ~candidates:[ scored_of "b" ] ~rejected:[];
+  Search_cache.forget cache ~instance_id:"radarr" ~media;
+  Alcotest.(check bool) "forgotten" true
+    (Search_cache.find ~now:2001. cache ~instance_id:"radarr" ~media = None);
+  (* A configuration change invalidates everything, because the candidates
+     were filtered and scored with the previous rules. *)
+  Search_cache.store ~now:3000. cache ~instance_id:"sonarr" ~media:(season 2)
+    ~candidates:[ scored_of "c" ] ~rejected:[];
+  Search_cache.clear cache;
+  Alcotest.(check bool) "cleared" true
+    (Search_cache.find ~now:3001. cache ~instance_id:"sonarr" ~media:(season 2) = None)
 
 (* ------------------------------------------------------------------ *)
 (* Automatic mode                                                      *)
@@ -1448,6 +1596,10 @@ let () =
           Alcotest.test_case "rejects bad types" `Quick test_options_rejects_bad_types;
           Alcotest.test_case "ignores unknown fields" `Quick test_options_ignores_unknown_fields;
           Alcotest.test_case "release id parsing" `Quick test_release_id_parsing;
+          Alcotest.test_case "grab target parsing" `Quick test_grab_target_parsing;
+          Alcotest.test_case "grab target matching" `Quick test_grab_target_matches;
+          Alcotest.test_case "queue note" `Quick test_queue_note;
+          Alcotest.test_case "search cache" `Quick test_search_cache;
         ] );
       ( "automatic",
         [

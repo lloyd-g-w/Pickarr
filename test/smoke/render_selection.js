@@ -130,6 +130,7 @@ const sample = {
   llm: null,
   grabbed: false,
   grab_error: null,
+  grab_notes: [],
   duration_ms: 42,
 };
 sample.candidates = [sample.selected];
@@ -192,6 +193,29 @@ check("a grabbed result says grabbed and offers Grab again", () => {
   const text = card.textContent;
   if (text.includes("not grabbed"))
     throw new Error("a grabbed result must not say 'not grabbed': " + text.slice(0, 200));
+});
+
+/* The grab diagnostics (which path the grab took, what the download queue
+   said) must reach the card, because they are the only place a user sees
+   "grabbed, but the download client refused it". */
+check("grab notes are shown", () => {
+  app.renderSelectionResult({
+    ...base,
+    grabbed: true,
+    grab_error: null,
+    grab_notes: ["searched again, then grabbed", "queue warning: qBittorrent rejected the release"],
+  });
+  const text = registry["#select-result"].textContent;
+  if (!text.includes("searched again, then grabbed"))
+    throw new Error("expected the grab path in the card: " + text.slice(0, 300));
+  if (!text.includes("queue warning"))
+    throw new Error("expected the queue warning in the card: " + text.slice(0, 300));
+});
+
+check("a result without grab notes renders unchanged", () => {
+  app.renderSelectionResult({ ...base, grabbed: true, grab_error: null, grab_notes: [] });
+  const text = registry["#select-result"].textContent;
+  if (text.includes("Grab:")) throw new Error("empty notes must not print a Grab: line");
 });
 
 check("a failed grab keeps the failure wording", () => {

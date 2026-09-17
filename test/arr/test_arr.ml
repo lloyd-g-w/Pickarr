@@ -18,6 +18,11 @@ let list_of json =
 
 let opt_string = Alcotest.(check (option string))
 let opt_int = Alcotest.(check (option int))
+
+let contains ~needle haystack =
+  let nl = String.length needle and hl = String.length haystack in
+  let rec go i = i + nl <= hl && (String.sub haystack i nl = needle || go (i + 1)) in
+  nl = 0 || go 0
 let strings = Alcotest.(check (list string))
 let bool_ = Alcotest.(check bool)
 
@@ -399,6 +404,144 @@ let test_grab_identity_guards () =
             (String.length (A.Mapping.grab_error_message e) > 0
             && e = A.Mapping.Missing_guid))
   | _ -> Alcotest.fail "fixture changed"
+
+(* ------------------------------------------------------------------ *)
+(* Why a grab failed, and the override retry                           *)
+(* ------------------------------------------------------------------ *)
+
+(* The messages are verbatim from vendor/{sonarr,radarr}-ReleaseController.cs
+   (docs/API_RESEARCH.md "3.5"): the retry Pickarr picks depends on them. *)
+let test_classify_grab_failure () =
+  let kind ~status ~message = A.Mapping.classify_grab_failure ~status ~message in
+  let same label expected got =
+    Alcotest.(check bool) label true (expected = got)
+  in
+  same "cache miss" A.Mapping.Cache_miss
+    (kind ~status:404
+       ~message:"Couldn't find requested release in cache, try searching again");
+  same "cache miss is matched case-insensitively" A.Mapping.Cache_miss
+    (kind ~status:404 ~message:"COULDN'T FIND REQUESTED RELEASE IN CACHE");
+  same "sonarr cannot map the series" A.Mapping.Needs_override
+    (kind ~status:404
+       ~message:
+         "Unable to find matching series and episodes, will need to be manually provided");
+  same "sonarr cannot parse the episodes" A.Mapping.Needs_override
+    (kind ~status:404
+       ~message:"Unable to parse episodes in the release, will need to be manually provided");
+  same "radarr cannot map the movie" A.Mapping.Needs_override
+    (kind ~status:404 ~message:"Unable to find matching movie, will need to be manually provided");
+  (* Everything else must not be retried: 409 comes from the indexer or the
+     download client, 400 from validation, and a 404 Pickarr does not know
+     is not worth a second request either. *)
+  same "indexer failure" A.Mapping.Permanent
+    (kind ~status:409 ~message:"Getting release from indexer failed");
+  same "validation failure" A.Mapping.Permanent (kind ~status:400 ~message:"guid is required");
+  same "unknown 404" A.Mapping.Permanent (kind ~status:404 ~message:"Not Found");
+  same "no message" A.Mapping.Permanent (kind ~status:500 ~message:"")
+
+let test_override_bodies () =
+  match sonarr_releases () with
+  | first :: _ ->
+      (* quality and languages are copied verbatim out of the raw
+         ReleaseResource, because Sonarr asserts they are non-null. *)
+      (match
+         A.Mapping.sonarr_override_body ~guid:"g-1" ~indexer_id:4 ~series_id:12
+           ~episode_ids:[ 5150; 5151 ] ~release:first
+       with
+      | Error _ -> Alcotest.fail "the fixture has a quality and languages"
+      | Ok body ->
+          let j = Yojson.Safe.to_string body in
+          Alcotest.(check bool) "shouldOverride" true (contains ~needle:{|"shouldOverride":true|} j);
+          Alcotest.(check bool) "seriesId" true (contains ~needle:{|"seriesId":12|} j);
+          Alcotest.(check bool) "episodeIds" true (contains ~needle:{|"episodeIds":[5150,5151]|} j);
+          Alcotest.(check bool) "quality object" true (contains ~needle:{|"quality":{|} j);
+          Alcotest.(check bool) "languages" true (contains ~needle:{|"languages":[|} j));
+      (* Sonarr rejects an empty episode list, so Pickarr refuses before the
+         request instead of sending something it knows is invalid. *)
+      (match
+         A.Mapping.sonarr_override_body ~guid:"g-1" ~indexer_id:4 ~series_id:12
+           ~episode_ids:[] ~release:first
+       with
+      | Ok _ -> Alcotest.fail "an empty episodeIds must be refused"
+      | Error e ->
+          Alcotest.(check bool) "message explains itself" true
+            (String.length (A.Mapping.override_error_message e) > 20));
+      (* A release with no quality in its raw payload cannot be overridden. *)
+      let bare = { first with T.raw = `Assoc [ ("languages", `List []) ] } in
+      (match
+         A.Mapping.sonarr_override_body ~guid:"g" ~indexer_id:1 ~series_id:1
+           ~episode_ids:[ 2 ] ~release:bare
+       with
+      | Ok _ -> Alcotest.fail "no quality must be refused"
+      | Error e -> Alcotest.(check bool) "missing quality" true (e = A.Mapping.Missing_quality));
+      (* An empty language list satisfies Sonarr's assertion but means
+         nothing, so it becomes the explicit "Unknown" language. *)
+      let no_lang =
+        { first with T.raw = `Assoc [ ("quality", `Assoc []); ("languages", `List []) ] }
+      in
+      (match
+         A.Mapping.radarr_override_body ~guid:"g" ~indexer_id:1 ~movie_id:77 ~release:no_lang
+       with
+      | Error _ -> Alcotest.fail "an empty language list is usable"
+      | Ok body ->
+          let j = Yojson.Safe.to_string body in
+          Alcotest.(check bool) "unknown language" true (contains ~needle:{|"name":"Unknown"|} j);
+          Alcotest.(check bool) "movieId" true (contains ~needle:{|"movieId":77|} j));
+      (* Radarr needs no episode list. *)
+      (match
+         A.Mapping.radarr_override_body ~guid:"g-2" ~indexer_id:2 ~movie_id:77 ~release:first
+       with
+      | Error _ -> Alcotest.fail "radarr override should build"
+      | Ok body ->
+          Alcotest.(check bool) "no episodeIds for radarr" false
+            (contains ~needle:"episodeIds" (Yojson.Safe.to_string body)))
+  | [] -> Alcotest.fail "fixture changed"
+
+(* An indexerId of 0 is what Sonarr/Radarr send when a release has no indexer;
+   grabbing with it can only fail, so it must be refused up front. *)
+let test_grab_identity_rejects_zero_indexer () =
+  match sonarr_releases () with
+  | first :: _ -> (
+      match A.Mapping.grab_identity { first with T.indexer_id = Some 0 } with
+      | Ok _ -> Alcotest.fail "indexerId 0 must not be grabbable"
+      | Error e ->
+          Alcotest.(check bool) "missing indexer" true (e = A.Mapping.Missing_indexer);
+          Alcotest.(check bool) "message mentions indexerId" true
+            (contains ~needle:"indexerId" (A.Mapping.grab_error_message e)))
+  | [] -> Alcotest.fail "fixture changed"
+
+(* ------------------------------------------------------------------ *)
+(* The queue check that confirms a grab reached the download client    *)
+(* ------------------------------------------------------------------ *)
+
+let test_queue_detail_decoding () =
+  let j =
+    Yojson.Safe.from_string
+      {|{"id":9,"title":"Some.Release","status":"downloading","trackedDownloadStatus":"ok",
+         "trackedDownloadState":"downloading","downloadClient":"qBittorrent","protocol":"torrent",
+         "episodeId":5150,"seriesId":12,
+         "statusMessages":[{"title":"Some.Release","messages":["Found matching series"]}]}|}
+  in
+  let d = A.Resources.queue_detail_of_yojson j in
+  opt_string "status" (Some "downloading") d.A.Resources.qd_status;
+  opt_string "tracked status" (Some "ok") d.A.Resources.qd_tracked_status;
+  opt_string "client" (Some "qBittorrent") d.A.Resources.qd_download_client;
+  opt_int "episode id" (Some 5150) d.A.Resources.qd_episode_id;
+  Alcotest.(check (list string))
+    "status message texts flattened"
+    [ "Some.Release"; "Found matching series" ]
+    d.A.Resources.qd_status_messages;
+  (* A warning item carries the reason in errorMessage or statusMessages. *)
+  let warn =
+    A.Resources.queue_detail_of_yojson
+      (Yojson.Safe.from_string
+         {|{"id":10,"status":"warning","trackedDownloadStatus":"warning","errorMessage":"No files found"}|})
+  in
+  opt_string "error message" (Some "No files found") warn.A.Resources.qd_error_message;
+  (* Missing fields must not raise. *)
+  let empty = A.Resources.queue_detail_of_yojson (`Assoc []) in
+  opt_string "no status" None empty.A.Resources.qd_status;
+  Alcotest.(check (list string)) "no messages" [] empty.A.Resources.qd_status_messages
 
 (* ------------------------------------------------------------------ *)
 (* Webhooks                                                            *)
@@ -962,6 +1105,10 @@ let tests =
     ("history decoding", `Quick, test_history_decoding);
     ("grab bodies", `Quick, test_grab_bodies);
     ("grab identity guards", `Quick, test_grab_identity_guards);
+    ("grab identity rejects indexerId 0", `Quick, test_grab_identity_rejects_zero_indexer);
+    ("classify grab failure", `Quick, test_classify_grab_failure);
+    ("override bodies", `Quick, test_override_bodies);
+    ("queue detail decoding", `Quick, test_queue_detail_decoding);
     ("webhooks", `Quick, test_webhooks);
     ("seerr webhook", `Quick, test_seerr_webhook);
     ("series list decoding", `Quick, test_series_list_decoding);

@@ -141,7 +141,14 @@ check "no POST /release yet" 0 "$(grabs_for $SONARR_PORT)"
 echo "== select & grab, app route (sonarr)"
 post grab-sonarr "/api/select/sonarr/episode/$EP" '{"grab":true}'
 check_grabbed "app route sonarr"
-check "one POST /release" 1 "$(grabs_for $SONARR_PORT)"  # the call is made either way
+# The call is made either way.  In notfound mode Sonarr claims the release
+# left its 30-minute cache, so Pickarr searches again and retries once
+# (docs/GRAB_BUG_NOTES.md); every other mode answers the first POST.
+case "$GRAB_MODE" in
+  notfound) EXPECTED_POSTS=2 ;;
+  *) EXPECTED_POSTS=1 ;;
+esac
+check "POST /release count" "$EXPECTED_POSTS" "$(grabs_for $SONARR_PORT)"
 echo "    grab body: $(last_grab $SONARR_PORT)"
 python3 - "$(last_grab $SONARR_PORT)" "$EP" <<'PY'
 import json,sys

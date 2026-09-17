@@ -2,7 +2,7 @@
 
 Not part of `dune test`: these drive the **real** binary against fake Sonarr,
 Radarr, Seerr and LLM servers, and check the browser UI with a DOM stub. They
-need `python3` and `node`, and they bind ports 19100-19461 on loopback.
+need `python3` and `node`, and they bind ports 19100-19521 on loopback.
 
 Build first, from the repository root, and run them from anywhere — each
 script resolves the repository from its own location:
@@ -23,6 +23,21 @@ Asserts the four select routes, the grab bodies Sonarr/Radarr receive, the
 AI and deterministic-fallback paths, grab-by-release-id (including that a
 hard-rejected release is refused), and that no failure mode answers 5xx.
 See `docs/GRAB_BUG_NOTES.md`.
+
+## Every path a grab can take
+
+```bash
+bash test/smoke/grab_paths_e2e.sh
+```
+
+Eleven scenarios against a scriptable fake (`fake_grab_arr.py`): a direct
+grab; a cache miss that is recovered by searching again; a cache miss where
+the release is really gone; Sonarr and Radarr demanding `shouldOverride` (with
+the exact override body asserted); a release with `indexerId: 0` refused
+before any POST; a download-queue warning surfaced after a successful grab; a
+409 that must not be retried; a hard-rejected release still refused; an
+unknown release id answering 404; and the flaky-indexer case that used to
+break the Grab button. See `docs/GRAB_BUG_NOTES.md`.
 
 ## AI selection with magnet-link guids
 

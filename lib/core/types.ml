@@ -183,6 +183,10 @@ type selection_result = {
   llm : llm_decision option;
   grabbed : bool;
   grab_error : string option;
+  grab_notes : string list;
+      (** Diagnostics about the grab attempt, shown under the result card:
+          which path was taken (direct / re-searched / override retry) and
+          what the download queue said afterwards. *)
   duration_ms : int;
 }
 
@@ -353,5 +357,6 @@ let selection_result_to_yojson (r : selection_result) : Yojson.Safe.t =
       ("llm", match r.llm with None -> `Null | Some d -> llm_decision_to_yojson d);
       ("grabbed", `Bool r.grabbed);
       ("grab_error", opt_str r.grab_error);
+      ("grab_notes", str_list r.grab_notes);
       ("duration_ms", `Int r.duration_ms);
     ]

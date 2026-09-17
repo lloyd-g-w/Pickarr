@@ -41,6 +41,23 @@ let deterministic_reason (top : Types.scored_release) : string =
   Printf.sprintf "Highest deterministic score (%.1f points) for %s"
     top.Types.score top.Types.scored.Types.title
 
+let empty_result ~(media : Types.media) : Types.selection_result =
+  {
+    Types.media;
+    selected = None;
+    candidates = [];
+    rejected = [];
+    reason = "";
+    explanation = [];
+    conflicts = [];
+    method_ = Types.By_deterministic;
+    llm = None;
+    grabbed = false;
+    grab_error = None;
+    grab_notes = [];
+    duration_ms = 0;
+  }
+
 let run ~(config : Config.t) ~(instance : Config.instance option)
     ~(media : Types.media) ~(releases : Types.release list)
     ?(instruction = "") ?(llm : llm_fn option) ?use_ai () :
@@ -62,6 +79,7 @@ let run ~(config : Config.t) ~(instance : Config.instance option)
         llm = llm_decision;
         grabbed = false;
         grab_error = None;
+        grab_notes = [];
         duration_ms;
       }
   in

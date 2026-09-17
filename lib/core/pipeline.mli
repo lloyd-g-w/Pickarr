@@ -47,3 +47,8 @@ val run :
   ?use_ai:bool ->
   unit ->
   Types.selection_result Lwt.t
+
+val empty_result : media:Types.media -> Types.selection_result
+(** A result skeleton for [media] with nothing selected and no candidates.
+    Used by the server when it grabs a release the user picked by hand, which
+    reports a selection result without re-running the pipeline. *)

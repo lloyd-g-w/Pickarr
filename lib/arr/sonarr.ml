@@ -412,6 +412,22 @@ let queue ~base_url ~api_key ~page_size =
   in
   Lwt.return (map_result (R.paging_of_yojson queue_item_of_yojson) r)
 
+(** [GET /api/v3/queue/details?seriesId=&episodeIds=] — unpaginated array,
+    used to confirm that a grab reached the download client
+    ([docs/API_RESEARCH.md] "6.6"). *)
+let queue_details ~base_url ~api_key ?series_id ?(episode_ids = []) () =
+  let query =
+    (match series_id with Some id -> [ ("seriesId", string_of_int id) ] | None -> [])
+    @ List.map (fun i -> ("episodeIds", string_of_int i)) episode_ids
+  in
+  let* r = Http.get ~base_url ~api_key ~query "/api/v3/queue/details" in
+  match r with
+  | Error e -> Lwt.return (Error e)
+  | Ok j -> (
+      match J.as_list "queue details" j with
+      | Error m -> Lwt.return (Error (Http.Json m))
+      | Ok l -> ok (List.map R.queue_detail_of_yojson l))
+
 (** [GET /api/v3/history/since?date=&eventType=grabbed] — returns a plain
     array.  [eventType] here is the string form of [EpisodeHistoryEventType]
     (unlike [/api/v3/history], whose filter is an int array with unverified

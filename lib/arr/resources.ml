@@ -106,6 +106,51 @@ type quality_profile = { qp_id : int; qp_name : string option }
 let quality_profile_of_yojson j =
   { qp_id = J.int_def "id" 0 j; qp_name = J.non_empty (J.string_opt "name" j) }
 
+(** The part of [QueueResource] that says whether a grab actually reached the
+    download client.  Both apps share these fields
+    ([docs/API_RESEARCH.md] "6.6"); the id fields are decoded per app. *)
+type queue_detail = {
+  qd_id : int;
+  qd_title : string option;
+  qd_status : string option;
+      (** [QueueStatus]: unknown | queued | paused | downloading | completed |
+          failed | warning | delay | downloadClientUnavailable | fallback *)
+  qd_tracked_status : string option;  (** [TrackedDownloadStatus]: ok | warning | error *)
+  qd_tracked_state : string option;
+  qd_error_message : string option;
+  qd_status_messages : string list;
+  qd_download_client : string option;
+  qd_protocol : string option;
+  qd_episode_id : int option;
+  qd_series_id : int option;
+  qd_movie_id : int option;
+}
+
+(* TrackedDownloadStatusMessage is {title, messages[]}; both carry text worth
+   showing, so flatten them into one list. *)
+let status_message_texts (j : Yojson.Safe.t) : string list =
+  J.list_def "statusMessages" j
+  |> List.concat_map (fun m ->
+         let title = Option.to_list (J.non_empty (J.string_opt "title" m)) in
+         title @ J.string_list "messages" m)
+  |> List.filter (fun s -> String.trim s <> "")
+
+let queue_detail_of_yojson j =
+  {
+    qd_id = J.int_def "id" 0 j;
+    qd_title = J.non_empty (J.string_opt "title" j);
+    qd_status = J.non_empty (J.string_opt "status" j);
+    qd_tracked_status = J.non_empty (J.string_opt "trackedDownloadStatus" j);
+    qd_tracked_state = J.non_empty (J.string_opt "trackedDownloadState" j);
+    qd_error_message = J.non_empty (J.string_opt "errorMessage" j);
+    qd_status_messages = status_message_texts j;
+    qd_download_client = J.non_empty (J.string_opt "downloadClient" j);
+    qd_protocol = J.non_empty (J.string_opt "protocol" j);
+    qd_episode_id = J.int_opt "episodeId" j;
+    qd_series_id = J.int_opt "seriesId" j;
+    qd_movie_id = J.int_opt "movieId" j;
+  }
+
 (* --- helpers shared by the mapping layer --------------------------------- *)
 
 let language_names (j : Yojson.Safe.t) (key : string) : string list =

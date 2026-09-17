@@ -108,6 +108,37 @@ val grab :
     within the last 30 minutes, otherwise Sonarr/Radarr answer 404
     ("Couldn't find requested release in cache"). *)
 
+val grab_override :
+  t ->
+  Pickarr_core.Types.media ->
+  Pickarr_core.Types.release ->
+  episode_ids:int list ->
+  (unit, error) result Lwt.t
+(** [POST /api/v3/release] with [shouldOverride = true]: the retry for the
+    case where Sonarr/Radarr answered 404 "will need to be manually
+    provided" because they could not map the release to the series/episodes
+    (or movie) themselves.
+
+    Sends the ids plus the release's own [quality] and [languages], taken
+    from the raw [ReleaseResource] Pickarr kept from the search, because
+    Sonarr/Radarr assert on all of them ([docs/API_RESEARCH.md] "3.3").
+    [episode_ids] must be non-empty for a Sonarr season or series media;
+    for an ["episode"] media it defaults to that episode.  Fails with
+    [Json] and an explanatory message when the release carries no quality or
+    languages, or when no episode id is known.
+
+    The release must still be in the 30-minute cache: an override does not
+    bypass it. *)
+
+val queue_details :
+  t ->
+  Pickarr_core.Types.media ->
+  (Resources.queue_detail list, error) result Lwt.t
+(** [GET /api/v3/queue/details] filtered to this media, used to confirm that
+    a successful grab actually reached the download client. Sonarr is queried
+    by [episodeIds] (episode media) or [seriesId] (season/series media),
+    Radarr by [movieId]. *)
+
 val wanted :
   t ->
   kind:[ `Missing | `Cutoff ] ->

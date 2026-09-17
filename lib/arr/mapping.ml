@@ -410,6 +410,130 @@ let radarr_grab_body ~guid ~indexer_id ~(media : T.media) : Yojson.Safe.t =
     ]
 
 (* ------------------------------------------------------------------ *)
+(* Why a grab failed, and how to retry it                              *)
+(* ------------------------------------------------------------------ *)
+
+(** How Pickarr should react to a rejected [POST /api/v3/release].
+
+    The messages are the verified ones from
+    [docs/API_RESEARCH.md] "3.5" ([vendor/sonarr-ReleaseController.cs],
+    [vendor/radarr-ReleaseController.cs]). *)
+type grab_failure =
+  | Cache_miss
+      (** 404 "Couldn't find requested release in cache, try searching
+          again": the 30-minute cache entry is gone, so a fresh search
+          re-populates it and the grab can be retried. *)
+  | Needs_override
+      (** 404 "Unable to find matching series and episodes" / "Unable to
+          parse episodes in the release" / "Unable to find matching movie":
+          automatic mapping failed, so the retry must send
+          [shouldOverride] with the ids, quality and languages. *)
+  | Permanent
+      (** Anything else (409 from the indexer, 400 validation, transport
+          errors): retrying the same request cannot help. *)
+
+let contains_ci ~needle ~haystack =
+  let needle = String.lowercase_ascii needle
+  and haystack = String.lowercase_ascii haystack in
+  let nl = String.length needle and hl = String.length haystack in
+  nl = 0
+  ||
+  let rec go i = i + nl <= hl && (String.sub haystack i nl = needle || go (i + 1)) in
+  go 0
+
+(** [classify_grab_failure status message] decides whether a failed grab is
+    worth retrying and how.  Only 404 carries a retryable meaning; the match
+    is on the message because both retryable cases share the status. *)
+let classify_grab_failure ~(status : int) ~(message : string) : grab_failure =
+  if status <> 404 then Permanent
+  else if contains_ci ~needle:"find requested release in cache" ~haystack:message then
+    Cache_miss
+  else if
+    contains_ci ~needle:"unable to find matching series" ~haystack:message
+    || contains_ci ~needle:"unable to parse episodes" ~haystack:message
+    || contains_ci ~needle:"unable to find matching movie" ~haystack:message
+    || contains_ci ~needle:"will need to be manually provided" ~haystack:message
+  then Needs_override
+  else Permanent
+
+(* The override inputs Sonarr/Radarr assert on are the release's own parsed
+   quality and languages, which are only available in the raw ReleaseResource
+   Pickarr kept from the search. *)
+let raw_member (key : string) (r : T.release) : Yojson.Safe.t option =
+  match r.T.raw with
+  | `Assoc fields -> (
+      match List.assoc_opt key fields with Some `Null | None -> None | Some v -> Some v)
+  | _ -> None
+
+(** Why an override retry is impossible for this release. *)
+type override_error = Missing_quality | Missing_languages | Missing_episode_ids
+
+let override_error_message = function
+  | Missing_quality ->
+      "Sonarr/Radarr could not map the release and the override retry needs \
+       its quality, which this release did not report"
+  | Missing_languages ->
+      "Sonarr/Radarr could not map the release and the override retry needs \
+       its languages, which this release did not report"
+  | Missing_episode_ids ->
+      "Sonarr could not map the release to episodes and no episode id is \
+       known to override with"
+
+let override_quality_and_languages (r : T.release) :
+    (Yojson.Safe.t * Yojson.Safe.t, override_error) result =
+  match raw_member "quality" r with
+  | None -> Error Missing_quality
+  | Some quality -> (
+      match raw_member "languages" r with
+      | None -> Error Missing_languages
+      (* An empty list satisfies the IsNotNull assertion but leaves Sonarr
+         without a language; "Unknown" (id 0) is what it parses to anyway. *)
+      | Some (`List []) ->
+          Ok (quality, `List [ `Assoc [ ("id", `Int 0); ("name", `String "Unknown") ] ])
+      | Some languages -> Ok (quality, languages))
+
+(** [POST /api/v3/release] override body for Sonarr, used only after Sonarr
+    answered that it could not map the release itself.  [shouldOverride]
+    requires [seriesId], a non-empty [episodeIds], [quality] and [languages]
+    ([docs/API_RESEARCH.md] "3.3"). *)
+let sonarr_override_body ~guid ~indexer_id ~(series_id : int) ~(episode_ids : int list)
+    ~(release : T.release) : (Yojson.Safe.t, override_error) result =
+  if episode_ids = [] then Error Missing_episode_ids
+  else
+    match override_quality_and_languages release with
+    | Error e -> Error e
+    | Ok (quality, languages) ->
+        Ok
+          (`Assoc
+            [
+              ("guid", `String guid);
+              ("indexerId", `Int indexer_id);
+              ("shouldOverride", `Bool true);
+              ("seriesId", `Int series_id);
+              ("episodeIds", `List (List.map (fun i -> `Int i) episode_ids));
+              ("quality", quality);
+              ("languages", languages);
+            ])
+
+(** [POST /api/v3/release] override body for Radarr: [movieId], [quality] and
+    [languages] ([docs/API_RESEARCH.md] "3.3"). *)
+let radarr_override_body ~guid ~indexer_id ~(movie_id : int) ~(release : T.release) :
+    (Yojson.Safe.t, override_error) result =
+  match override_quality_and_languages release with
+  | Error e -> Error e
+  | Ok (quality, languages) ->
+      Ok
+        (`Assoc
+          [
+            ("guid", `String guid);
+            ("indexerId", `Int indexer_id);
+            ("shouldOverride", `Bool true);
+            ("movieId", `Int movie_id);
+            ("quality", quality);
+            ("languages", languages);
+          ])
+
+(* ------------------------------------------------------------------ *)
 (* Webhooks                                                            *)
 (* ------------------------------------------------------------------ *)
 

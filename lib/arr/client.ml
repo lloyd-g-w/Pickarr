@@ -312,6 +312,53 @@ let grab t (media : T.media) (release : T.release) =
       | T.Radarr ->
           Radarr.grab ~base_url ~api_key (Mapping.radarr_grab_body ~guid ~indexer_id ~media))
 
+let grab_override t (media : T.media) (release : T.release) ~(episode_ids : int list) =
+  let base_url = base t and api_key = key t in
+  match Mapping.grab_identity release with
+  | Error e -> Lwt.return (Error (Http.Json (Mapping.grab_error_message e)))
+  | Ok (guid, indexer_id) -> (
+      let body =
+        match app t with
+        | T.Sonarr ->
+            (* media_id is the episode id for an "episode" media and the
+               series id for a season/series one; series_id is in extra. *)
+            let series_id =
+              match series_id_of_media media with
+              | Some id -> id
+              | None -> media.T.media_id
+            in
+            let episode_ids =
+              match (episode_ids, media.T.media_kind) with
+              | [], "episode" -> [ media.T.media_id ]
+              | ids, _ -> ids
+            in
+            Mapping.sonarr_override_body ~guid ~indexer_id ~series_id ~episode_ids ~release
+        | T.Radarr ->
+            Mapping.radarr_override_body ~guid ~indexer_id ~movie_id:media.T.media_id ~release
+      in
+      match body with
+      | Error e -> Lwt.return (Error (Http.Json (Mapping.override_error_message e)))
+      | Ok body -> (
+          match app t with
+          | T.Sonarr -> Sonarr.grab ~base_url ~api_key body
+          | T.Radarr -> Radarr.grab ~base_url ~api_key body))
+
+let queue_details t (media : T.media) =
+  let base_url = base t and api_key = key t in
+  match app t with
+  | T.Sonarr ->
+      let series_id = series_id_of_media media in
+      let episode_ids =
+        match media.T.media_kind with "episode" -> [ media.T.media_id ] | _ -> []
+      in
+      let series_id =
+        match (series_id, media.T.media_kind) with
+        | None, ("season" | "series") -> Some media.T.media_id
+        | v, _ -> v
+      in
+      Sonarr.queue_details ~base_url ~api_key ?series_id ~episode_ids ()
+  | T.Radarr -> Radarr.queue_details ~base_url ~api_key ~movie_id:media.T.media_id ()
+
 (* ------------------------------------------------------------------ *)
 (* Automatic-mode helpers                                              *)
 (* ------------------------------------------------------------------ *)

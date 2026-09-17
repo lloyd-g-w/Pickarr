@@ -284,6 +284,20 @@ let queue ~base_url ~api_key ~page_size =
   in
   Lwt.return (map_result (R.paging_of_yojson queue_item_of_yojson) r)
 
+(** [GET /api/v3/queue/details?movieId=] — unpaginated array, used to confirm
+    that a grab reached the download client ([docs/API_RESEARCH.md] "6.6"). *)
+let queue_details ~base_url ~api_key ?movie_id () =
+  let query =
+    match movie_id with Some id -> [ ("movieId", string_of_int id) ] | None -> []
+  in
+  let* r = Http.get ~base_url ~api_key ~query "/api/v3/queue/details" in
+  match r with
+  | Error e -> Lwt.return (Error e)
+  | Ok j -> (
+      match J.as_list "queue details" j with
+      | Error m -> Lwt.return (Error (Http.Json m))
+      | Ok l -> ok (List.map R.queue_detail_of_yojson l))
+
 (** [GET /api/v3/history/since?date=] — plain array; event type filtered
     client-side. *)
 let history_since ~base_url ~api_key ?event_type ~date () =

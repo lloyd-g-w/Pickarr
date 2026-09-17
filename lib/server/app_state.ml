@@ -31,6 +31,9 @@ type t = {
       (** Optional password login and API key. When nothing is configured the
           API is open. *)
   clients : (string, Config.instance * Client.t) Hashtbl.t;
+  searches : Search_cache.t;
+      (** What the last search offered per (instance, media), so a grab uses
+          the release the user actually saw instead of re-searching. *)
   scheduler : scheduler;
   started_at : float;
   static_dir : string option;
@@ -51,6 +54,7 @@ let create ?(getenv = Sys.getenv_opt) (store : Store.t) (auth : Auth.t) =
     store;
     auth;
     clients = Hashtbl.create 8;
+    searches = Search_cache.create ();
     scheduler =
       {
         mutex = Lwt_mutex.create ();

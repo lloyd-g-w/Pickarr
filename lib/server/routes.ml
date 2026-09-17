@@ -390,13 +390,12 @@ let grab_specific_release (state : App_state.t) request =
       match media_id_param request "media_id" with
       | Error e -> error_json `Bad_Request e
       | Ok media_id -> (
-          match Selection.release_id_of_json body with
+          match Selection.grab_target_of_json body with
           | Error e -> error_json `Bad_Request e
-          | Ok release_id -> (
+          | Ok target -> (
               let instance_id = Dream.param request "instance_id" in
               let* result =
-                Selection.grab_release_on_instance_id state ~instance_id ~media_id
-                  ~release_id
+                Selection.grab_release_on_instance_id state ~instance_id ~media_id ~target
               in
               match result with
               | Error e -> selection_error_response e
@@ -480,14 +479,14 @@ let grab_specific_season_release (state : App_state.t) request =
       match
         ( media_id_param request "series_id",
           season_number_param request "season_number",
-          Selection.release_id_of_json body )
+          Selection.grab_target_of_json body )
       with
       | Error e, _, _ | _, Error e, _ | _, _, Error e -> error_json `Bad_Request e
-      | Ok series_id, Ok season_number, Ok release_id -> (
+      | Ok series_id, Ok season_number, Ok target -> (
           let instance_id = Dream.param request "instance_id" in
           let* result =
             Selection.grab_release_season_on_instance_id state ~instance_id ~series_id
-              ~season_number ~release_id
+              ~season_number ~target
           in
           match result with
           | Error e -> selection_error_response e
@@ -614,6 +613,11 @@ let put_config (state : App_state.t) request =
       | Error e -> error_json `Bad_Request e
       | Ok updated ->
           App_state.prune_clients state;
+          (* Cached search results were scored and filtered with the previous
+             rules, so a grab must not be able to use them: a release that the
+             new hard rules reject would otherwise still be grabbable from a
+             page rendered a moment ago. *)
+          Search_cache.clear state.searches;
           Log_buffer.infof "configuration updated (%d instance(s), AI %s)"
             (List.length updated.instances)
             (if updated.llm.llm_enabled then "enabled" else "disabled");

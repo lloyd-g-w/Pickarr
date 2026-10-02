@@ -164,3 +164,21 @@ node test/smoke/check_element_ids.js
 | `fake_sonarr_magnet.py` | Sonarr whose releases have magnet-link guids (`fixtures/sonarr_releases_magnet.json`) |
 | `fake_llm.py` | OpenAI-compatible server answering `short`, `mangled`, `titles`, `percent`, `prose` or `truncated` |
 | `fake_slow_radarr.py` | Radarr whose `GET /api/v3/release` sleeps; the delay is changeable at `/__delay?seconds=`, calls recorded at `/__state` |
+
+## Queue integration
+
+```bash
+bash test/smoke/queue_integration_e2e.sh
+```
+
+Ports 19650-19699. Fake Sonarr (`fake_arr.py`) plus a slow fake Radarr
+(`fake_slow_radarr.py`, 2 s per search). Asserts that the action endpoints
+answer exactly as before while running as queue jobs (search, grab_release,
+grab_best, the error statuses 400/404, the passes), that two identical
+concurrent searches share one job (one release search for both), that a
+Radarr webhook queues a job that searches, and that the work emits the
+expected events (`auth.login`, `config.updated` without secrets,
+`instance.tested`, `search.*` and `grab.*` tagged with their job,
+`automatic.pass`, `seerr.pass`, `webhook.received`). Events come from
+`GET /api/events` when present, else from the stub module's
+`PICKARR_STUB_EVENTS_LOG` file.

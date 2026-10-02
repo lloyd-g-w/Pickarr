@@ -103,6 +103,10 @@ let main () =
       Pickarr_arr.Http.timeout_seconds :=
         (Pickarr_arr.Client.timeouts_of_network cfg.network).quick_seconds;
       describe state;
+      (* Job kinds are registered before the queue starts, so jobs restored
+         from the previous run find their runner. *)
+      Job_kinds.register_all ();
+      Jobs.start state;
       Automatic.start state;
       Seerr_sync.start state;
       Dream.run ~interface:(env_host ()) ~port:(env_port ()) ~greeting:false

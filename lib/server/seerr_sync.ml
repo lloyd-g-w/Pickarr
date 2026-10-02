@@ -371,6 +371,22 @@ let fulfil_request (state : App_state.t) (cfg : Config.t) ?(title : Seerr.title 
               Log_buffer.warnf "seerr: %s: %s" (label ?title r) msg;
               Lwt.return [ summary_of_skip ?title r msg ]
           | Some (found, total) ->
+              Activity.event ~media:(label ?title r)
+                ~data:
+                  [
+                    ("request_id", `Int r.rq_id);
+                    ("items", `Int total);
+                    ( "targets",
+                      `List
+                        (List.map
+                           (fun ((inst : Config.instance), target) ->
+                             `String
+                               (Printf.sprintf "%s: %s" inst.inst_name
+                                  (Fulfil.target_to_string target)))
+                           found) );
+                  ]
+                "seerr.resolved"
+                (Printf.sprintf "seerr: %s resolved to %d item(s)" (label ?title r) total);
               let* per_instance =
                 Lwt_list.map_s
                   (fun ((inst : Config.instance), target) ->
@@ -422,6 +438,10 @@ let approve_pending (cfg : Config.t) (cache : title_cache) :
             match approved with
             | Ok updated ->
                 Log_buffer.infof "seerr: approved %s (request #%d)" (label ?title r) r.rq_id;
+                Activity.event ~media:(label ?title r)
+                  ~data:[ ("request_id", `Int r.rq_id); ("by", `String "auto-approve") ]
+                  "seerr.approved"
+                  (Printf.sprintf "seerr: approved %s (request #%d)" (label ?title r) r.rq_id);
                 Lwt.return
                   (summary_of_request ?title r [ ("action", `String "approved") ], Some updated)
             | Error e ->
@@ -476,11 +496,17 @@ let process_approved (state : App_state.t) (cfg : Config.t) (cache : title_cache
       Log_buffer.infof "seerr: %d approved request(s), %d to search for, %d skipped%s"
         (List.length requests) (List.length chosen) (List.length skipped)
         (if s.seerr_grab then "" else " (dry run: grabbing disabled)");
+      let total = List.length chosen in
       let* results =
-        Lwt_list.map_s
-          (fun (r : Seerr.request) ->
+        Lwt_list.mapi_s
+          (fun i (r : Seerr.request) ->
             let* title = title_of_request s cache r in
-            fulfil_request state cfg ?title r)
+            Activity.set_prefix
+              (Printf.sprintf "request %d/%d: %s \xe2\x80\x94 " (i + 1) total (label ?title r));
+            Activity.progress "resolving";
+            let* summary = fulfil_request state cfg ?title r in
+            Activity.set_prefix "";
+            Lwt.return summary)
           chosen
       in
       let* skipped =
@@ -512,6 +538,23 @@ let run_once (state : App_state.t) : Yojson.Safe.t Lwt.t =
            with
           | `String e :: _ -> Some e
           | _ -> None);
+        Activity.event
+          ?level:(if sync.last_error <> None then Some Events.Warn else None)
+          ~data:
+            [
+              ("approved", `Int sync.last_approved);
+              ("fulfilled", `Int sync.last_fulfilled);
+              ("results", `Int (List.length results));
+              ("dry_run", `Bool (not s.seerr_grab));
+              ("error", opt_str sync.last_error);
+              ( "duration_ms",
+                `Int (int_of_float ((Unix.gettimeofday () -. started) *. 1000.)) );
+            ]
+          "seerr.pass"
+          (Printf.sprintf "Seerr pass: %d approved, %d fulfilled%s%s" sync.last_approved
+             sync.last_fulfilled
+             (if s.seerr_grab then "" else " (dry run)")
+             (match sync.last_error with Some e -> " \xe2\x80\x94 " ^ e | None -> ""));
         Lwt.return
           (`Assoc
             [
@@ -550,39 +593,43 @@ let run_once (state : App_state.t) : Yojson.Safe.t Lwt.t =
 (* Single-request actions (used by the routes)                         *)
 (* ------------------------------------------------------------------ *)
 
-(** Fulfil one request by id, in the background. Used after a manual approval
-    and by POST /api/seerr/requests/:id/fulfil, so the HTTP call returns
-    immediately instead of waiting for the *arr. *)
-let fulfil_in_background (state : App_state.t) (request_id : int) =
-  Lwt.async (fun () ->
-      Lwt.catch
-        (fun () ->
-          let cfg = App_state.config state in
-          let s = cfg.seerr in
-          if not (configured s) then (
-            Log_buffer.warnf "seerr: cannot fulfil request #%d: %s" request_id
-              (unconfigured_reason s);
-            Lwt.return_unit)
-          else
-            let* r = Seerr.request_by_id ~base_url:s.seerr_url ~api_key:s.seerr_api_key request_id in
-            match r with
-            | Error e ->
-                Log_buffer.warnf "seerr: cannot read request #%d: %s" request_id
-                  (Pickarr_arr.Http.error_to_string e);
-                Lwt.return_unit
-            | Ok r ->
-                let cache = title_cache () in
-                let* title = title_of_request s cache r in
-                let* results = fulfil_request state cfg ?title r in
-                sync.last_results <-
-                  List.filteri
-                    (fun i _ -> i < max_remembered_results)
-                    (results @ sync.last_results);
-                Lwt.return_unit)
-        (fun exn ->
-          Log_buffer.errorf "seerr: fulfilment of request #%d failed: %s" request_id
-            (Printexc.to_string exn);
-          Lwt.return_unit))
+(** Fulfil one request by id, the way the poller would (Seerr's grab switch
+    and automatic mode's confidence rule).  Runs as the "seerr_fulfil" queue
+    job, queued after a manual approval and by POST
+    /api/seerr/requests/:id/fulfil.  Errors carry an HTTP status prefix (see
+    {!Responses}): 409 when Seerr is not configured, 404/502 when the request
+    cannot be read. *)
+let fulfil_by_id (state : App_state.t) (request_id : int) :
+    (Yojson.Safe.t, [ `Unconfigured of string | `Not_found of string | `Upstream of string ])
+    result
+    Lwt.t =
+  let cfg = App_state.config state in
+  let s = cfg.seerr in
+  if not (configured s) then Lwt.return (Error (`Unconfigured (unconfigured_reason s)))
+  else
+    let* r = Seerr.request_by_id ~base_url:s.seerr_url ~api_key:s.seerr_api_key request_id in
+    match r with
+    | Error (Pickarr_arr.Http.Http_status (404, _)) ->
+        Lwt.return (Error (`Not_found (Printf.sprintf "no Seerr request #%d" request_id)))
+    | Error e ->
+        Log_buffer.warnf "seerr: cannot read request #%d: %s" request_id
+          (Pickarr_arr.Http.error_to_string e);
+        Lwt.return (Error (`Upstream (Pickarr_arr.Http.error_to_string e)))
+    | Ok r ->
+        let cache = title_cache () in
+        let* title = title_of_request s cache r in
+        Activity.set_title (label ?title r);
+        let* results = fulfil_request state cfg ?title r in
+        sync.last_results <-
+          List.filteri (fun i _ -> i < max_remembered_results) (results @ sync.last_results);
+        Lwt.return
+          (Ok
+             (`Assoc
+               [
+                 ("request_id", `Int request_id);
+                 ("request", request_to_compact ~config:cfg ?title r);
+                 ("results", `List results);
+               ]))
 
 (** Approve or decline one request. *)
 let set_request_status (state : App_state.t) ~(request_id : int) ~(approve : bool) :
@@ -601,6 +648,11 @@ let set_request_status (state : App_state.t) ~(request_id : int) ~(approve : boo
     | Ok r ->
         Log_buffer.infof "seerr: request #%d %s" request_id
           (if approve then "approved" else "declined");
+        Activity.event
+          ~data:[ ("request_id", `Int request_id); ("by", `String "user") ]
+          (if approve then "seerr.approved" else "seerr.declined")
+          (Printf.sprintf "seerr: request #%d %s" request_id
+             (if approve then "approved" else "declined"));
         Lwt.return (Ok (request_to_compact ~config:cfg r))
 
 (** One page of requests for the UI, enriched with titles. *)
@@ -699,17 +751,14 @@ let start (state : App_state.t) =
       Some (Automatic.rfc3339_of_unix (Unix.gettimeofday () +. float_of_int interval));
     let* () = Lwt_unix.sleep (float_of_int interval) in
     let cfg = App_state.config state in
-    let* () =
-      if not (configured cfg.seerr) then Lwt.return_unit
-      else
-        Lwt.catch
-          (fun () -> Lwt.map (fun (_ : Yojson.Safe.t) -> ()) (run_once state))
-          (fun exn ->
-            let msg = Printexc.to_string exn in
-            sync.last_error <- Some msg;
-            Log_buffer.errorf "seerr: pass failed: %s" msg;
-            Lwt.return_unit)
-    in
+    (* The pass runs as a "seerr_pass" queue job: visible in the queue, and
+       de-duplicated so a slow pass is never queued twice. *)
+    (if configured cfg.seerr then
+       match Jobs.enqueue state ~source:"seerr" "seerr_pass" (`Assoc []) with
+       | Ok _ -> ()
+       | Error e ->
+           sync.last_error <- Some e;
+           Log_buffer.errorf "seerr: could not queue a pass: %s" e);
     loop ()
   in
   Lwt.async (fun () ->
@@ -1043,6 +1092,10 @@ let select_for_request (state : App_state.t) ~(request_id : int) (body : select_
               | Error e -> Lwt.return (Error (Req_upstream (Pickarr_arr.Http.error_to_string e)))
               | Ok updated ->
                   Log_buffer.infof "seerr: approved request #%d before selecting" request_id;
+                  Activity.event
+                    ~data:[ ("request_id", `Int request_id); ("by", `String "user") ]
+                    "seerr.approved"
+                    (Printf.sprintf "seerr: approved request #%d before selecting" request_id);
                   Lwt.return (Ok (updated, true)))
         in
         match approved with
@@ -1050,6 +1103,7 @@ let select_for_request (state : App_state.t) ~(request_id : int) (body : select_
         | Ok (r, just_approved) -> (
             let cache = title_cache () in
             let* title = title_of_request s cache r in
+            Activity.set_title (label ?title r);
             let compact = request_to_compact ~config:cfg ?title r in
             match app_of_media_type r.rq_type with
             | None ->
@@ -1094,10 +1148,24 @@ let select_for_request (state : App_state.t) ~(request_id : int) (body : select_
                                (Types.app_to_string app))))
                 | Ok inst -> (
                     (* 3. resolve, waiting only when the approval is fresh *)
+                    Activity.progress
+                      (if just_approved then "waiting for the *arr to add the request\xe2\x80\xa6"
+                       else "resolving the request");
                     let* target =
                       if just_approved then resolve_with_retry state r inst approve_wait_delays
                       else resolve_on_instance state r inst
                     in
+                    if Fulfil.target_items target > 0 then
+                      Activity.event ~media:(label ?title r)
+                        ~data:
+                          [
+                            ("request_id", `Int r.rq_id);
+                            ("instance", `String inst.inst_name);
+                            ("target", `String (Fulfil.target_to_string target));
+                          ]
+                        "seerr.resolved"
+                        (Printf.sprintf "seerr: %s resolved to %s on %s" (label ?title r)
+                           (Fulfil.target_to_string target) inst.inst_name);
                     let opts = body.sb_options in
                     let respond kind payload grabbed =
                       (* Only a grab starts the cooldown: previewing a request

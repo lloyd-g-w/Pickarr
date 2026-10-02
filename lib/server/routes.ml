@@ -203,6 +203,10 @@ let login_submit (state : App_state.t) request =
         match Auth.check_login auth ~username ~password with
         | Error message ->
             Log_buffer.warnf "failed login attempt for user \"%s\"" username;
+            Activity.event ~level:Events.Warn
+              ~data:[ ("username", `String username); ("ip", `String (Dream.client request)) ]
+              "auth.login_failed"
+              (Printf.sprintf "failed login for \"%s\" from %s" username (Dream.client request));
             if source = `Json then error_json `Unauthorized message
             else
               html ~status:`Unauthorized
@@ -211,6 +215,10 @@ let login_submit (state : App_state.t) request =
             let* () = Dream.invalidate_session request in
             let* () = Dream.set_session_field request Auth.session_field user in
             Log_buffer.infof "user %s signed in" user;
+            Activity.event
+              ~data:[ ("username", `String user); ("ip", `String (Dream.client request)) ]
+              "auth.login"
+              (Printf.sprintf "%s signed in from %s" user (Dream.client request));
             if source = `Json then respond_json (`Assoc [ ("ok", `Bool true) ])
             else Dream.redirect request "/")
 
@@ -247,6 +255,13 @@ let setup_submit (state : App_state.t) request =
     | `Wrong_content_type -> fail "Unsupported form encoding."
 
 let logout request =
+  (match Dream.session_field request Auth.session_field with
+  | Some user when String.trim user <> "" ->
+      Activity.event
+        ~data:[ ("username", `String user); ("ip", `String (Dream.client request)) ]
+        "auth.logout"
+        (Printf.sprintf "%s signed out" user)
+  | _ -> ());
   let* () = Dream.invalidate_session request in
   if wants_json request then respond_json (`Assoc [ ("ok", `Bool true) ])
   else Dream.redirect request "/login"
@@ -358,18 +373,125 @@ let parse_options request =
       Lwt.return
         (Selection.options_of_json ?grab_query:(Dream.query request "grab") body)
 
-let run_selection (state : App_state.t) ?instance_id request
-    (resolve : Selection.options -> (Types.selection_result, Selection.error) result Lwt.t)
-    =
+(* ------------------------------------------------------------------ *)
+(* Actions run as queue jobs                                           *)
+(* ------------------------------------------------------------------ *)
+
+(* Every action endpoint below (select, grab, Seerr select, the passes)
+   enqueues the matching job (lib/server/job_kinds.ml) so it shows up in the
+   queue, then waits for it and answers with the job's result: the same JSON
+   and the same status codes as before the queue existed.  A job error
+   carries its status as a "[ddd] " prefix (see lib/server/responses.ml).  If
+   the job does not finish within three search timeouts plus a minute, the
+   answer is 202 {"job": ...} and the caller can poll GET /api/jobs/:id. *)
+
+let error_status code message = error_json (Dream.int_to_status code) message
+
+let job_source request =
+  match Dream.header request "X-Pickarr-Source" with
+  | Some s when String.lowercase_ascii (String.trim s) = "ui" -> "ui"
+  | _ -> "api"
+
+let job_wait_timeout (state : App_state.t) =
+  let cfg = App_state.config state in
+  float_of_int ((cfg.network.arr_search_timeout_seconds * 3) + 60)
+
+let int_member key json =
+  match json with
+  | `Assoc fields -> ( match List.assoc_opt key fields with Some (`Int i) -> Some i | _ -> None)
+  | _ -> None
+
+(** Answer a job the way its endpoint answered before the queue. *)
+let respond_job (job : Yojson.Safe.t) =
+  match string_field "status" job with
+  | Some "succeeded" -> (
+      match job with
+      | `Assoc fields -> respond_json (Option.value (List.assoc_opt "result" fields) ~default:`Null)
+      | _ -> respond_json `Null)
+  | Some "failed" ->
+      let code, message =
+        Responses.split_status_error ~default:500
+          (Option.value (string_field "error" job) ~default:"the job failed")
+      in
+      error_status code message
+  | Some "cancelled" ->
+      error_json `Conflict
+        (match int_member "id" job with
+        | Some id -> Printf.sprintf "job #%d was cancelled" id
+        | None -> "the job was cancelled")
+  | _ -> respond_json ~status:`Accepted (`Assoc [ ("job", job) ])
+
+(** Enqueue a job and answer with its outcome. *)
+let run_job (state : App_state.t) request ~(kind : string) (params : Yojson.Safe.t) =
+  match Jobs.enqueue state ~source:(job_source request) kind params with
+  | Error e ->
+      let code, message = Responses.split_status_error ~default:400 e in
+      error_status code message
+  | Ok job -> (
+      match int_member "id" job with
+      | None -> respond_json ~status:`Accepted (`Assoc [ ("job", job) ])
+      | Some id -> (
+          let* finished = Jobs.wait id ~timeout:(job_wait_timeout state) in
+          match finished with
+          | Some job -> respond_job job
+          | None ->
+              respond_json ~status:`Accepted
+                (`Assoc [ ("job", Option.value (Jobs.get id) ~default:job) ])))
+
+(** The parameters of a "search" / "grab_best" job. *)
+let selection_job_params ~(instance_id : string) ~(target : Yojson.Safe.t)
+    (opts : Selection.options) : Yojson.Safe.t =
+  `Assoc
+    ([ ("instance_id", `String instance_id); ("target", target) ]
+    @ (match opts.instruction with Some i -> [ ("instruction", `String i) ] | None -> [])
+    @ match opts.use_ai with Some b -> [ ("use_ai", `Bool b) ] | None -> [])
+
+let selection_kind (opts : Selection.options) = if opts.grab then "grab_best" else "search"
+
+let instance_by_id (state : App_state.t) id =
+  match App_state.find_instance state id with Some i -> Ok i | None -> Error id
+
+let default_instance_for (state : App_state.t) app =
+  match App_state.default_instance state app with
+  | Some i -> Ok i
+  | None -> Error (Types.app_to_string app)
+
+let unknown_instance_response id =
+  error_json `Not_Found (Printf.sprintf "no instance \"%s\" is configured" id)
+
+let movie_target id = `Assoc [ ("kind", `String "movie"); ("media_id", `Int id) ]
+let episode_target id = `Assoc [ ("kind", `String "episode"); ("media_id", `Int id) ]
+
+(* A media id means a movie on Radarr and an episode on Sonarr. *)
+let media_target (inst : Config.instance) id =
+  match inst.inst_app with Types.Radarr -> movie_target id | Types.Sonarr -> episode_target id
+
+let season_target ~series_id ~season_number =
+  `Assoc
+    [
+      ("kind", `String "season");
+      ("series_id", `Int series_id);
+      ("season_number", `Int season_number);
+    ]
+
+let series_target ~series_id ~seasons =
+  `Assoc
+    ([ ("kind", `String "series"); ("series_id", `Int series_id) ]
+    @ match seasons with [] -> [] | ns -> [ ("seasons", `List (List.map (fun n -> `Int n) ns)) ])
+
+(** A selection endpoint: options from the body (400), then the instance
+    (404), then the job. *)
+let run_selection (state : App_state.t) request
+    (instance : (Config.instance, string) result) (target : Config.instance -> Yojson.Safe.t) =
   let* opts = parse_options request in
   match opts with
   | Error e -> error_json `Bad_Request e
   | Ok opts -> (
-      let* result = resolve opts in
-      match result with
-      | Error e -> selection_error_response e
-      | Ok result ->
-          respond_linked state ?instance_id (Types.selection_result_to_yojson result))
+      match instance with
+      | Error id -> unknown_instance_response id
+      | Ok inst ->
+          run_job state request ~kind:(selection_kind opts)
+            (selection_job_params ~instance_id:inst.inst_id ~target:(target inst) opts))
 
 let media_id_param request name =
   match int_of_string_opt (Dream.param request name) with
@@ -378,10 +500,29 @@ let media_id_param request name =
       Error
         (Printf.sprintf "\"%s\" must be a positive integer" (Dream.param request name))
 
+(* The release-identity fields of a grab-by-hand body, passed on to the
+   "grab_release" job unchanged. *)
+let release_fields (body : Yojson.Safe.t) =
+  match body with
+  | `Assoc fields ->
+      List.filter
+        (fun (k, _) -> List.mem k [ "release_id"; "guid"; "indexer_id"; "release_title" ])
+        fields
+  | _ -> []
+
+let run_grab_release (state : App_state.t) request ~(body : Yojson.Safe.t)
+    (instance_id : string) (target : Config.instance -> Yojson.Safe.t) =
+  match instance_by_id state instance_id with
+  | Error id -> unknown_instance_response id
+  | Ok inst ->
+      run_job state request ~kind:"grab_release"
+        (`Assoc
+          ([ ("instance_id", `String inst.inst_id); ("target", target inst) ] @ release_fields body))
+
 (* Grab one specific candidate rather than the pipeline's winner: the Select
    page puts a Grab button on every candidate row.  The release id comes from
-   a previous selection response; the server re-searches before grabbing
-   because Sonarr/Radarr only accept releases from the last search. *)
+   a previous selection response; see Selection.grab_release_media for how
+   the release the user saw is found again. *)
 let grab_specific_release (state : App_state.t) request =
   let* body = json_body request in
   match body with
@@ -392,16 +533,9 @@ let grab_specific_release (state : App_state.t) request =
       | Ok media_id -> (
           match Selection.grab_target_of_json body with
           | Error e -> error_json `Bad_Request e
-          | Ok target -> (
-              let instance_id = Dream.param request "instance_id" in
-              let* result =
-                Selection.grab_release_on_instance_id state ~instance_id ~media_id ~target
-              in
-              match result with
-              | Error e -> selection_error_response e
-              | Ok result ->
-                  respond_linked state ~instance_id
-                    (Types.selection_result_to_yojson result))))
+          | Ok _ ->
+              run_grab_release state request ~body (Dream.param request "instance_id")
+                (fun inst -> media_target inst media_id)))
 
 (* ------------------------------------------------------------------ *)
 (* Seasons and whole series (Sonarr)                                   *)
@@ -417,12 +551,9 @@ let season_number_param request name =
         (Printf.sprintf "\"%s\" must be a season number (0 or greater)"
            (Dream.param request name))
 
-(* Like [run_selection], but for a whole-series run, which answers with one
-   outcome per season instead of a single selection. *)
-let run_series_selection (state : App_state.t) ?instance_id request
-    (resolve :
-      Selection.options -> seasons:int list -> (Selection.series_result, Selection.error) result Lwt.t)
-    =
+(* Like [run_selection], but a whole-series run also takes "seasons". *)
+let run_series_selection (state : App_state.t) request
+    (instance : (Config.instance, string) result) ~(series_id : int) =
   let* body = json_body request in
   match body with
   | Error e -> error_json `Bad_Request e
@@ -433,41 +564,41 @@ let run_series_selection (state : App_state.t) ?instance_id request
       with
       | Error e, _ | _, Error e -> error_json `Bad_Request e
       | Ok opts, Ok seasons -> (
-          let* result = resolve opts ~seasons in
-          match result with
-          | Error e -> selection_error_response e
-          | Ok result ->
-              respond_linked state ?instance_id (Selection.series_result_to_yojson result)))
+          match instance with
+          | Error id -> unknown_instance_response id
+          | Ok inst ->
+              run_job state request ~kind:(selection_kind opts)
+                (selection_job_params ~instance_id:inst.inst_id
+                   ~target:(series_target ~series_id ~seasons) opts)))
 
 let select_season_on_default (state : App_state.t) request =
   match (media_id_param request "series_id", season_number_param request "season_number") with
   | Error e, _ | _, Error e -> error_json `Bad_Request e
   | Ok series_id, Ok season_number ->
-      run_selection state request (fun opts ->
-          Selection.run_season_on_default state ~series_id ~season_number opts)
+      run_selection state request (default_instance_for state Types.Sonarr) (fun _ ->
+          season_target ~series_id ~season_number)
 
 let select_season_on_instance (state : App_state.t) request =
   match (media_id_param request "series_id", season_number_param request "season_number") with
   | Error e, _ | _, Error e -> error_json `Bad_Request e
   | Ok series_id, Ok season_number ->
-      let instance_id = Dream.param request "instance_id" in
-      run_selection state ~instance_id request (fun opts ->
-          Selection.run_season_on_instance_id state ~instance_id ~series_id ~season_number opts)
+      run_selection state request
+        (instance_by_id state (Dream.param request "instance_id"))
+        (fun _ -> season_target ~series_id ~season_number)
 
 let select_series_on_default (state : App_state.t) request =
   match media_id_param request "series_id" with
   | Error e -> error_json `Bad_Request e
   | Ok series_id ->
-      run_series_selection state request (fun opts ~seasons ->
-          Selection.run_series_on_default state ~series_id ~seasons opts)
+      run_series_selection state request (default_instance_for state Types.Sonarr) ~series_id
 
 let select_series_on_instance (state : App_state.t) request =
   match media_id_param request "series_id" with
   | Error e -> error_json `Bad_Request e
   | Ok series_id ->
-      let instance_id = Dream.param request "instance_id" in
-      run_series_selection state ~instance_id request (fun opts ~seasons ->
-          Selection.run_series_on_instance_id state ~instance_id ~series_id ~seasons opts)
+      run_series_selection state request
+        (instance_by_id state (Dream.param request "instance_id"))
+        ~series_id
 
 (* The season equivalent of [grab_specific_release]: a pack is named by series
    id and season number, because a season has no media id of its own. *)
@@ -482,16 +613,9 @@ let grab_specific_season_release (state : App_state.t) request =
           Selection.grab_target_of_json body )
       with
       | Error e, _, _ | _, Error e, _ | _, _, Error e -> error_json `Bad_Request e
-      | Ok series_id, Ok season_number, Ok target -> (
-          let instance_id = Dream.param request "instance_id" in
-          let* result =
-            Selection.grab_release_season_on_instance_id state ~instance_id ~series_id
-              ~season_number ~target
-          in
-          match result with
-          | Error e -> selection_error_response e
-          | Ok result ->
-              respond_linked state ~instance_id (Types.selection_result_to_yojson result)))
+      | Ok series_id, Ok season_number, Ok _ ->
+          run_grab_release state request ~body (Dream.param request "instance_id") (fun _ ->
+              season_target ~series_id ~season_number))
 
 let get_series_overview (state : App_state.t) request =
   match media_id_param request "series_id" with
@@ -602,6 +726,26 @@ let patch_config state body =
   Store.update state.App_state.store (fun current ->
       Result.map (apply_explicit_nulls body) (Config.patch current body))
 
+(* Which sections a configuration change touched, by top-level key only:
+   never values, so no secret can end up in the event log. *)
+let config_sections (body : Yojson.Safe.t) : string list =
+  match body with `Assoc fields -> List.map fst fields | _ -> []
+
+let config_event ~(how : string) (body : Yojson.Safe.t) (updated : Config.t) =
+  let sections = config_sections body in
+  Activity.event
+    ~data:
+      [
+        ("sections", `List (List.map (fun s -> `String s) sections));
+        ("via", `String how);
+        ("instances", `Int (List.length updated.instances));
+        ("ai_enabled", `Bool updated.llm.llm_enabled);
+      ]
+    "config.updated"
+    (Printf.sprintf "configuration updated (%s)%s"
+       (match sections with [] -> "no sections" | l -> String.concat ", " l)
+       (if how = "settings" then "" else " via " ^ how))
+
 let put_config (state : App_state.t) request =
   let* body = json_body request in
   match body with
@@ -621,6 +765,7 @@ let put_config (state : App_state.t) request =
           Log_buffer.infof "configuration updated (%d instance(s), AI %s)"
             (List.length updated.instances)
             (if updated.llm.llm_enabled then "enabled" else "disabled");
+          config_event ~how:"settings" body updated;
           respond_json (Config.to_yojson ~redact:true updated))
 
 let instance_summary ?(status : Yojson.Safe.t = `Null) (i : Config.instance) =
@@ -650,6 +795,15 @@ let test_instance (state : App_state.t) request =
       let* result = Client.test_connection client in
       match result with
       | Ok (app_name, version, instance_name) ->
+          Activity.event ~instance_id:inst.inst_id
+            ~data:
+              [
+                ("ok", `Bool true);
+                ("app_name", `String app_name);
+                ("version", `String version);
+              ]
+            "instance.tested"
+            (Printf.sprintf "%s: connection OK (%s %s)" inst.inst_name app_name version);
           respond_json
             (`Assoc
               [
@@ -661,6 +815,10 @@ let test_instance (state : App_state.t) request =
       | Error e ->
           let msg = Client.error_to_string e in
           Log_buffer.warnf "instance test failed for %s: %s" inst.inst_name msg;
+          Activity.event ~level:Events.Warn ~instance_id:inst.inst_id
+            ~data:[ ("ok", `Bool false); ("error", `String msg) ]
+            "instance.tested"
+            (Printf.sprintf "%s: connection failed: %s" inst.inst_name msg);
           respond_json ~status:`Bad_Gateway
             (`Assoc [ ("ok", `Bool false); ("error", `String msg) ]))
 
@@ -673,6 +831,10 @@ let test_llm (state : App_state.t) _request =
   in
   match result with
   | Ok text ->
+      Activity.event
+        ~data:[ ("ok", `Bool true); ("model", `String cfg.llm.llm_model) ]
+        "llm.tested"
+        (Printf.sprintf "AI connection OK (%s)" cfg.llm.llm_model);
       respond_json
         (`Assoc
           [
@@ -684,6 +846,10 @@ let test_llm (state : App_state.t) _request =
   | Error e ->
       let msg = Llm.error_to_string e in
       Log_buffer.warnf "LLM test failed: %s" msg;
+      Activity.event ~level:Events.Warn
+        ~data:[ ("ok", `Bool false); ("model", `String cfg.llm.llm_model); ("error", `String msg) ]
+        "llm.tested"
+        (Printf.sprintf "AI connection failed (%s): %s" cfg.llm.llm_model msg);
       respond_json ~status:`Bad_Gateway
         (`Assoc [ ("ok", `Bool false); ("error", `String msg) ])
 
@@ -790,6 +956,7 @@ let apply_rules (state : App_state.t) request =
           | Error e -> error_json `Bad_Request e
           | Ok updated ->
               Log_buffer.infof "structured rules updated from an approved proposal";
+              config_event ~how:"rule proposal" patch updated;
               respond_json
                 (`Assoc
                   [
@@ -800,9 +967,8 @@ let apply_rules (state : App_state.t) request =
 
 let automatic_status (state : App_state.t) _request = respond_json (Automatic.status state)
 
-let automatic_run (state : App_state.t) _request =
-  let* summary = Automatic.run_once state in
-  respond_json summary
+let automatic_run (state : App_state.t) request =
+  run_job state request ~kind:"automatic_pass" (`Assoc [])
 
 (* Webhooks are exempt from the session middleware because Sonarr/Radarr
    cannot send headers; the user puts ?apikey=<key> in the configured URL. *)
@@ -888,27 +1054,52 @@ let seerr_decide (state : App_state.t) ~(approve : bool) request =
       match result with
       | Error msg -> error_json `Bad_Gateway msg
       | Ok json ->
-          if approve then Seerr_sync.fulfil_in_background state request_id;
+          (* The fulfilment that follows an approval is a queued job, so the
+             answer does not wait for the *arr. *)
+          let job =
+            if not approve then []
+            else
+              match
+                Jobs.enqueue state ~source:(job_source request) "seerr_fulfil"
+                  (`Assoc [ ("request_id", `Int request_id) ])
+              with
+              | Ok job -> [ ("job_id", Option.fold ~none:`Null ~some:(fun i -> `Int i) (int_member "id" job)) ]
+              | Error e ->
+                  Log_buffer.warnf "seerr: could not queue the fulfilment of request #%d: %s"
+                    request_id e;
+                  [ ("job_id", `Null) ]
+          in
           respond_json
             (`Assoc
-              [
-                ("ok", `Bool true);
-                ("action", `String (if approve then "approved" else "declined"));
-                ("request", json);
-              ]))
+              ([
+                 ("ok", `Bool true);
+                 ("action", `String (if approve then "approved" else "declined"));
+                 ("request", json);
+               ]
+              @ job)))
 
 let seerr_fulfil (state : App_state.t) request =
   match seerr_request_id request with
   | Error e -> error_json `Bad_Request e
-  | Ok request_id ->
-      Seerr_sync.fulfil_in_background state request_id;
-      respond_json
-        (`Assoc
-           [ ("ok", `Bool true); ("action", `String "fulfilling"); ("request_id", `Int request_id) ])
+  | Ok request_id -> (
+      match
+        Jobs.enqueue state ~source:(job_source request) "seerr_fulfil"
+          (`Assoc [ ("request_id", `Int request_id) ])
+      with
+      | Error e ->
+          let code, message = Responses.split_status_error ~default:400 e in
+          error_status code message
+      | Ok job ->
+          respond_json
+            (`Assoc
+               [
+                 ("ok", `Bool true);
+                 ("action", `String "fulfilling");
+                 ("request_id", `Int request_id);
+                 ("job_id", Option.fold ~none:`Null ~some:(fun i -> `Int i) (int_member "id" job));
+               ]))
 
-let seerr_run (state : App_state.t) _request =
-  let* summary = Seerr_sync.run_once state in
-  respond_json summary
+let seerr_run (state : App_state.t) request = run_job state request ~kind:"seerr_pass" (`Assoc [])
 
 (* ------------------------------------------------------------------ *)
 (* Working a Seerr request like the Select page                        *)
@@ -946,13 +1137,18 @@ let seerr_select (state : App_state.t) request =
       | Ok body -> (
           match Seerr_sync.select_body_of_json ?grab_query:(Dream.query request "grab") body with
           | Error e -> error_json `Bad_Request e
-          | Ok body -> (
-              let* result = Seerr_sync.select_for_request state ~request_id body in
-              match result with
-              | Ok json ->
-                  let instance_id = string_field "instance_id" json in
-                  respond_linked state ?instance_id json
-              | Error e -> seerr_request_error_response e)))
+          | Ok parsed ->
+              (* The job re-parses the body; [grab] is fixed here because a
+                 ?grab= query may have set it. *)
+              let fields =
+                match body with
+                | `Assoc f -> List.filter (fun (k, _) -> k <> "grab" && k <> "request_id") f
+                | _ -> []
+              in
+              run_job state request ~kind:"seerr_select"
+                (`Assoc
+                  ([ ("request_id", `Int request_id); ("grab", `Bool parsed.sb_options.grab) ]
+                  @ fields))))
 
 (* ------------------------------------------------------------------ *)
 (* UI                                                                  *)
@@ -1023,15 +1219,15 @@ let router (state : App_state.t) =
                  match media_id_param request "id" with
                  | Error e -> error_json `Bad_Request e
                  | Ok media_id ->
-                     run_selection state request (fun opts ->
-                         Selection.run_on_default state ~app:Types.Radarr ~media_id opts)));
+                     run_selection state request (default_instance_for state Types.Radarr)
+                       (fun _ -> movie_target media_id)));
           Dream.post "/select/sonarr/episode/:id"
             (guard "POST /api/select/sonarr/episode/:id" (fun request ->
                  match media_id_param request "id" with
                  | Error e -> error_json `Bad_Request e
                  | Ok media_id ->
-                     run_selection state request (fun opts ->
-                         Selection.run_on_default state ~app:Types.Sonarr ~media_id opts)));
+                     run_selection state request (default_instance_for state Types.Sonarr)
+                       (fun _ -> episode_target media_id)));
           (* Seasons and whole series: registered before the generic
              /select/:instance_id/:media_id route so that the literal
              "season"/"series" segments always win. *)
@@ -1068,9 +1264,9 @@ let router (state : App_state.t) =
                  match media_id_param request "media_id" with
                  | Error e -> error_json `Bad_Request e
                  | Ok media_id ->
-                     let instance_id = Dream.param request "instance_id" in
-                     run_selection state ~instance_id request (fun opts ->
-                         Selection.run_on_instance_id state ~instance_id ~media_id opts)));
+                     run_selection state request
+                       (instance_by_id state (Dream.param request "instance_id"))
+                       (fun inst -> media_target inst media_id)));
           (* The season form is registered first: it has more segments, and
              the literal "season" must not be read as a media id. *)
           Dream.post "/grab/:instance_id/season/:series_id/:season_number"

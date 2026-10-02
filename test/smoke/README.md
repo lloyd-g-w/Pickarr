@@ -178,7 +178,7 @@ continue). Ports 19600-19601.
 | `fake_radarr_seerr.py` | Radarr for the Seerr tests, recording searches and grabs to a JSON state file |
 | `fake_sonarr_magnet.py` | Sonarr whose releases have magnet-link guids (`fixtures/sonarr_releases_magnet.json`) |
 | `fake_llm.py` | OpenAI-compatible server answering `short`, `mangled`, `titles`, `percent`, `prose` or `truncated` |
-| `fake_slow_radarr.py` | Radarr whose `GET /api/v3/release` sleeps; the delay is changeable at `/__delay?seconds=`, calls recorded at `/__state` |
+| `fake_slow_radarr.py` | Radarr whose `GET /api/v3/release` sleeps; the delay is changeable at `/__delay?seconds=`, the search can be made to fail with `/__fail?status=500` (`0` stops), calls recorded at `/__state` |
 
 ## Queue integration
 
@@ -197,3 +197,39 @@ expected events (`auth.login`, `config.updated` without secrets,
 `automatic.pass`, `seerr.pass`, `webhook.received`). Events come from
 `GET /api/events` when present, else from the stub module's
 `PICKARR_STUB_EVENTS_LOG` file.
+
+## Queue, the way the UI drives it
+
+```bash
+bash test/smoke/queue_ui_e2e.sh
+```
+
+Ports 19800-19802. The real binary with `fake_slow_radarr.py` and
+`fake_sonarr_seasons.py`; every step makes the requests `static/app.js`
+makes (`POST /api/jobs {kind, params, source:"ui"}` → 202, then
+`GET /api/jobs/:id` until finished):
+
+* a movie search whose `job.result` has the shape `renderSelectionResult`
+  draws (media with links, selected, candidates, rejected, explanation);
+* `grab_release` with the selected release's id/guid/indexer → `grabbed:true`
+  and exactly one `POST /api/v3/release` at the fake;
+* a season search and a whole-series search;
+* rejected enqueues answer 404/400 without the `[ddd]` prefix;
+* one worker + a slow search: the next job waits at position 1, a duplicate
+  enqueue returns the running job, cancelling the queued one works (and 409
+  the second time) and it never starts;
+* the fake's search fails with 500: the job fails with `error_status: 502`
+  and a plain `error`, `/api/select/...` still answers 502, retry
+  (`retry_of`, `attempt: 2`) succeeds, retrying a succeeded job is 409;
+* `GET /api/jobs` counts, ordering and the status filter;
+* `GET /api/events` has `job.queued`, `job.started`, `search.done`,
+  `job.succeeded`, `grab.accepted`, `job.cancelled` and `job.failed`
+  (with `error_status`) tagged with the job id, and `since_id` paging;
+* `kill -9` with one job running and one queued, then a restart: the running
+  job is failed "interrupted by restart" (with a `job.interrupted` event),
+  the queued one runs, results and ids survive.
+
+The finished jobs are saved as `/tmp/queue-ui-e2e-*.json` and drawn by the
+DOM shim (`QUEUE_UI_REAL_JOBS=<files> node test/smoke/fake_jobs_api.js`):
+the Queue tab lists them without any `[ddd]` prefix and the job drawer draws
+each real result with the Search page renderers.

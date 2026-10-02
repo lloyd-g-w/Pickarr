@@ -509,6 +509,8 @@ always win after a restart — handy for Docker.
 | `AUTO_MODE_ENABLED`, `AUTO_MODE_GRAB`, `AUTO_MODE_INTERVAL_SECONDS` | Automatic mode |
 | `ARR_TIMEOUT_SECONDS` | Timeout for quick Sonarr/Radarr calls, default `30` (5-900) |
 | `ARR_SEARCH_TIMEOUT_SECONDS` | Timeout for release searches and library listings, default `180` (5-900) |
+| `QUEUE_WORKERS` | Queue jobs running at once, default `2` (1-8) |
+| `QUEUE_PER_INSTANCE` | Queue jobs running at once against one Sonarr/Radarr instance, default `1` (1-4) |
 | `DATA_DIR` | Config + history directory (default `/data`, else `./data`) |
 | `STATIC_DIR` | UI assets (default `/app/static`, else `./static`) |
 | `HOST`, `PORT` | Listen address (default `0.0.0.0:8484`) |
@@ -616,13 +618,21 @@ timeouts plus a minute, the answer is `202 {"job": {...}}`; poll
 | POST | `/api/seerr/requests/:id/resolve` | What the request maps to in Sonarr/Radarr, without searching |
 | POST | `/api/seerr/requests/:id/select` | Run the pipeline for the request and answer like `/api/select` (`{grab?, instruction?, use_ai?, instance_id?, season_number?, approve?}`) |
 | POST | `/api/seerr/run` | Run a Seerr pass now |
-| POST | `/api/jobs` | Queue a job `{kind, params, source?}` → `202 {"job":…}` (an identical queued/running job is returned instead of a duplicate) |
+| POST | `/api/jobs` | Queue a job `{kind, params, source?}` → `202 {"job":…}` (an identical queued/running job is returned instead of a duplicate); 400 for an unknown kind or bad params, 404 for an unknown instance |
 | GET | `/api/jobs` | Jobs, newest first, plus counts (`?status=queued,running` or `active`/`finished`, `?kind=`, `?limit=100`, `?include=result`) |
 | GET | `/api/jobs/:id` | One job, including its result |
 | POST | `/api/jobs/:id/cancel` | Cancel a queued or running job (409 once finished) |
-| POST | `/api/jobs/:id/retry` | Queue a failed or cancelled job again (409 otherwise) |
+| POST | `/api/jobs/:id/retry` | Queue a failed or cancelled job again (409 otherwise; 404 if its instance has been removed) |
 | DELETE | `/api/jobs?status=finished` | Remove succeeded, failed and cancelled jobs from the list → `{"cleared":n}` |
 | GET | `/api/events` | Event log, ascending (`?since_id=` for polling, `?limit=`, `?type=<prefix>`, `?level=info\|warn\|error`, `?job_id=`, `?q=<text>`) → `{"events":[…],"last_id":n}` |
+
+A job is `{id, kind, status, label, source, instance_id, params, created_at,
+started_at, finished_at, duration_ms, position, progress, attempt, retry_of,
+error, error_status, result}`. `status` is `queued`, `running`, `succeeded`,
+`failed` or `cancelled`; `position` is the place among the queued jobs. For a
+failed job `error` is the plain message and `error_status` the HTTP status it
+stands for (e.g. `502` when Sonarr/Radarr failed, `404` for unknown media) or
+`null` — the same status the synchronous endpoints answer with.
 
 Requests below assume no authentication; add `-H 'X-Api-Key: <key>'` when an
 API key is configured.

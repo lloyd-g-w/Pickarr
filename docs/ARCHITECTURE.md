@@ -429,7 +429,7 @@ jobs live and shows the event log.
   synchronously validates the params (no I/O) and returns a `prepared`
   record: label, instance id, optional dedupe key and the `run` function.
   The real kinds (`search`, `grab_best`, `grab_release`, `seerr_select`,
-  `automatic_pass`, `seerr_pass`, `seerr_webhook`) live in
+  `seerr_fulfil`, `automatic_pass`, `seerr_pass`, `seerr_webhook`) live in
   `lib/server/job_kinds.ml` and are registered by `Job_kinds.register_all ()`
   **before** `Jobs.start`, because queued jobs restored after a restart are
   re-prepared through their kind.
@@ -450,6 +450,15 @@ jobs live and shows the event log.
   cancelled at once, so a runner that ignores cancellation never leaves a
   job stuck "running". `Jobs.wait` resolves every waiter when the job
   finishes. Retry creates a new job (`attempt + 1`, `retry_of`).
+* Errors and HTTP statuses: a runner (or a kind's parser) that stands for an
+  HTTP status prefixes its message, `"[502] Radarr: …"`
+  (`lib/server/status_error.ml`). When a job fails the queue splits the
+  prefix off: the job JSON carries `error` (plain message, also in the
+  `job.failed` event) and `error_status` (`502`, or `null`). The endpoints
+  that wait for a job answer with `error_status` (`Responses.job_error_status`),
+  `POST /api/jobs` and retry answer a parser's prefixed error with its
+  status (404 unknown instance, else 400 / 409). Clients never see the
+  prefix; the UI also strips it defensively.
 * `DATA_DIR/jobs.json` is a debounced snapshot (≤ 1 write/s, temp file +
   rename). Results are kept for the newest 50 finished jobs only. On start,
   running jobs become failed ("interrupted by restart", `job.interrupted`),

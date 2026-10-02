@@ -584,3 +584,173 @@ ol.steps button {
 .grab-actions {
   margin: 0.6rem 0 0.2rem;
 }
+
+/* --- queue, events and the job drawer ------------------------------ */
+
+/* "2 running · 3 queued" on the Queue tab button, visible from every tab. */
+.nav-badge {
+  display: inline-block;
+  margin-left: 0.35rem;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  vertical-align: 1px;
+}
+
+.nav-badge.busy {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin: 0.4rem 0;
+}
+
+button.chip {
+  padding: 0.2rem 0.65rem;
+  border-radius: 999px;
+  font-size: 0.82rem;
+}
+
+button.chip.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.queue-toolbar,
+.events-toolbar {
+  align-items: center;
+}
+
+.pill {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.pill-queued {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+
+.pill-running {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: rgba(74, 163, 255, 0.1);
+}
+
+.pill-succeeded {
+  color: var(--good);
+  border-color: var(--good);
+}
+
+.pill-failed {
+  color: var(--bad);
+  border-color: var(--bad);
+  background: rgba(248, 81, 73, 0.1);
+}
+
+.pill-cancelled {
+  color: var(--muted);
+  border-style: dashed;
+}
+
+tr.job-failed td {
+  background: rgba(248, 81, 73, 0.06);
+}
+
+tr.job-cancelled td {
+  color: var(--muted);
+}
+
+tr.job-cancelled td:nth-child(4) {
+  text-decoration: line-through;
+}
+
+tr.job-running td {
+  background: rgba(74, 163, 255, 0.05);
+}
+
+.job-error {
+  color: var(--bad);
+  font-size: 0.85rem;
+}
+
+td.nowrap,
+.nowrap {
+  white-space: nowrap;
+}
+
+tr.event-warn td {
+  background: rgba(210, 153, 34, 0.06);
+}
+
+tr.event-error td {
+  background: rgba(248, 81, 73, 0.07);
+}
+
+table.compact td {
+  padding-top: 0.2rem;
+  padding-bottom: 0.2rem;
+}
+
+/* A button that reads like a link: "view", "#12". */
+button.linklike {
+  background: none;
+  border: none;
+  color: var(--accent);
+  padding: 0 0.3rem;
+  text-decoration: underline;
+}
+
+.result button {
+  margin-left: 0.4rem;
+}
+
+#toast .toast-action {
+  margin-left: 0.6rem;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+/* The job drawer slides over the right side of any tab. */
+.drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(1000px, 96vw);
+  overflow: auto;
+  background: var(--bg);
+  border-left: 2px solid var(--accent);
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.45);
+  padding: 1rem 1.2rem 2rem;
+  z-index: 20;
+}
+
+.drawer[hidden] {
+  display: none;
+}
+
+.drawer-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.drawer-head h3 {
+  margin: 0;
+}

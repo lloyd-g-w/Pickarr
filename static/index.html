@@ -14,6 +14,8 @@
         <button data-tab="dashboard" class="active">Dashboard</button>
         <button data-tab="select">Search</button>
         <button data-tab="requests">Requests</button>
+        <button data-tab="queue">Queue <span id="queue-badge" class="nav-badge" hidden></span></button>
+        <button data-tab="events">Events</button>
         <button data-tab="rules">Rules &amp; Preferences</button>
         <button data-tab="instances">Instances</button>
         <button data-tab="llm">AI &amp; Automatic</button>
@@ -32,6 +34,12 @@
 
         <h2>Status</h2>
         <div id="status-cards" class="cards">Loading…</div>
+
+        <h2>Queue</h2>
+        <div id="dashboard-queue">Loading…</div>
+
+        <h2>Recent activity</h2>
+        <div id="dashboard-activity">Loading…</div>
 
         <h2>Instances</h2>
         <div id="dashboard-instances">Loading…</div>
@@ -258,6 +266,18 @@
           <button id="save-llm" class="primary">Save AI &amp; automatic settings</button>
           <span id="llm-status" class="result"></span>
         </p>
+
+        <h2>Queue</h2>
+        <p class="hint">
+          Every Search and Grab, every automatic and Seerr pass, and the work a
+          webhook starts runs as a job in one queue, visible on the
+          <em>Queue</em> tab. These limits decide how much of it runs at once.
+        </p>
+        <div id="queue-form" class="form-grid"></div>
+        <p>
+          <button id="save-queue" class="primary">Save queue settings</button>
+          <span id="queue-status" class="result"></span>
+        </p>
       </section>
 
       <!-- ---------------------------------------------------------- -->
@@ -316,6 +336,55 @@
           <label class="inline"><input id="auth-required" type="checkbox" /> Enabled</label>
           <span id="auth-required-status" class="result"></span>
         </p>
+      </section>
+
+      <!-- ---------------------------------------------------------- -->
+      <section id="tab-queue" class="tab">
+        <h2>Queue</h2>
+        <p class="hint">
+          Searches, grabs and passes run here one after another (see the
+          <em>Queue</em> settings on the <em>AI &amp; Automatic</em> tab for how
+          many at once). A queued job shows its place in line; <em>View</em>
+          opens its result, with the same ranking and <em>Grab</em> buttons as
+          the Search page.
+        </p>
+        <div class="row queue-toolbar">
+          <div id="queue-filters" class="chips"></div>
+          <button id="queue-reload" class="small">Reload</button>
+          <button id="queue-clear" class="small">Clear finished</button>
+          <span id="queue-result" class="result"></span>
+        </div>
+        <div id="queue-list">Loading…</div>
+      </section>
+
+      <!-- ---------------------------------------------------------- -->
+      <section id="tab-events" class="tab">
+        <h2>Events</h2>
+        <p class="hint">
+          What Pickarr did, newest first: jobs starting and finishing, searches,
+          every grab attempt and what Sonarr/Radarr answered, Seerr approvals,
+          webhooks, sign-ins and configuration changes.
+        </p>
+        <div class="row events-toolbar">
+          <label>
+            Level
+            <select id="events-level">
+              <option value="info">info and above</option>
+              <option value="warn">warnings and errors</option>
+              <option value="error">errors only</option>
+            </select>
+          </label>
+          <label class="grow">
+            Text
+            <input id="events-q" type="search" autocomplete="off" placeholder="title, release, message…" />
+          </label>
+          <label class="inline"><input id="events-follow" type="checkbox" checked /> Follow</label>
+          <button id="events-pause" class="small">Pause</button>
+          <button id="events-reload" class="small">Reload</button>
+        </div>
+        <div id="events-types" class="chips"></div>
+        <p class="hint"><span id="events-summary"></span></p>
+        <div id="events-list">Loading…</div>
       </section>
 
       <!-- ---------------------------------------------------------- -->
@@ -402,6 +471,19 @@
         </section>
       </section>
     </main>
+
+    <!-- One job: what it was asked to do, its status and its result. Opened
+         by View on the Queue tab, a #job link on the Events tab or a job
+         status line anywhere. -->
+    <aside id="job-drawer" class="drawer" hidden>
+      <div class="drawer-head">
+        <h3 id="job-drawer-title">Job</h3>
+        <button id="job-drawer-close" class="small">Close</button>
+      </div>
+      <div id="job-drawer-meta"></div>
+      <p><span id="job-drawer-status" class="result"></span></p>
+      <div id="job-drawer-body"></div>
+    </aside>
 
     <script src="/static/app.js"></script>
   </body>

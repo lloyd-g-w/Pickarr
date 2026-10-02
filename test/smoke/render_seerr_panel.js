@@ -67,7 +67,7 @@ src = src.replace(/^"use strict";/, "");
 const app = new Function(
   src +
     "\nreturn { renderSeerrPanelHeader, renderSeerrTargets, renderSeerrSelection," +
-    " renderSeerrRequests, seerrSelectionBody, grabUrlFor, closeSeerrPanel };"
+    " renderSeerrRequests, seerrSelectionBody, releaseTarget, closeSeerrPanel, openSeerrRequest };"
 )();
 
 let failures = 0;
@@ -211,19 +211,52 @@ check("pending rows offer approve, approve & grab, decline", () => {
   if (text.includes("Approve & select")) throw new Error("old wording still present: " + text);
 });
 
-check("a season pack is grabbed through the season route", () => {
-  const url = app.grabUrlFor("sonarr", {
+check("a season pack is grabbed with a season target", () => {
+  const target = app.releaseTarget({
     media_kind: "season",
     media_id: 12,
     series_id: 12,
     season_number: 2,
   });
-  if (url !== "/api/grab/sonarr/season/12/2") throw new Error(url);
+  const want = { kind: "season", series_id: 12, season_number: 2 };
+  if (JSON.stringify(target) !== JSON.stringify(want)) throw new Error(JSON.stringify(target));
 });
-check("an episode is grabbed through the media route", () => {
-  const url = app.grabUrlFor("sonarr", { media_kind: "episode", media_id: 5150 });
-  if (url !== "/api/grab/sonarr/5150") throw new Error(url);
+check("an episode is grabbed with an episode target", () => {
+  const target = app.releaseTarget({ media_kind: "episode", media_id: 5150 });
+  if (JSON.stringify(target) !== JSON.stringify({ kind: "episode", media_id: 5150 }))
+    throw new Error(JSON.stringify(target));
 });
 
-console.log(failures === 0 ? "\nALL PANEL RENDER CHECKS PASSED" : `\n${failures} CHECK(S) FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+/* The panel's actions are queued jobs: Search on a request must POST a
+   seerr_select job, not call the old synchronous endpoint. */
+(async () => {
+  const posted = [];
+  global.fetch = async (url, options) => {
+    const o = options || {};
+    const body = o.body ? JSON.parse(o.body) : undefined;
+    posted.push({ method: o.method || "GET", url, body });
+    let json = {};
+    if (url.endsWith("/resolve")) json = movieResolve;
+    if (url === "/api/jobs")
+      json = { job: { id: 1, kind: body.kind, status: "queued", position: 1, label: "Seerr request #41" } };
+    return { status: url === "/api/jobs" ? 202 : 200, ok: true, text: async () => JSON.stringify(json) };
+  };
+  document.querySelector("#seerr-instruction").value = "";
+  await app.openSeerrRequest(movieResolve.request);
+  const searchButton = document.querySelector("#seerr-panel-search");
+  for (const fn of (searchButton.listeners && Object.values(searchButton.listeners)) || []) fn();
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  check("the panel's Search queues a seerr_select job", () => {
+    const job = posted.find((p) => p.url === "/api/jobs");
+    if (!job) throw new Error("no POST /api/jobs: " + JSON.stringify(posted.map((p) => p.url)));
+    if (job.body.kind !== "seerr_select") throw new Error(JSON.stringify(job.body));
+    if (job.body.params.request_id !== movieResolve.request.id) throw new Error(JSON.stringify(job.body));
+    if (posted.some((p) => p.url.includes("/select"))) throw new Error("the sync select endpoint was called");
+    const status = document.querySelector("#seerr-select-status").textContent;
+    if (!status.includes("#1 queued (position 1)")) throw new Error(status);
+  });
+  console.log(failures === 0 ? "\nALL PANEL RENDER CHECKS PASSED" : `\n${failures} CHECK(S) FAILED`);
+  process.exit(failures === 0 ? 0 : 1);
+})();

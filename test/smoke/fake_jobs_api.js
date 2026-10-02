@@ -471,9 +471,65 @@ async function check(label, fn) {
   }
 }
 
+/* QUEUE_UI_REAL_JOBS=a.json,b.json: draw jobs captured from the real server
+   by queue_ui_e2e.sh ({"job": ...} as GET /api/jobs/:id answers) in the
+   Queue tab and the job drawer, instead of the fake-backend checks. */
+async function realJobChecks(files) {
+  const jobs = files.map((f) => JSON.parse(fs.readFileSync(f, "utf8")).job);
+  backend.jobs = jobs.map((j) => Object.assign({}, j));
+  backend.nextJob = Math.max(...jobs.map((j) => j.id)) + 1;
+  await check(`Queue tab lists the ${jobs.length} real jobs`, async () => {
+    await app.loadQueue();
+    await flush();
+    const rows = rowsOf($("#queue-list"));
+    for (const j of jobs)
+      assert.ok(rows.some((r) => r.children[0].textContent === `#${j.id}`), `#${j.id} missing`);
+    const text = $("#queue-list").textContent;
+    assert.ok(!/\[\d{3}\] /.test(text), "a [ddd] prefix is shown: " + text.slice(0, 300));
+  });
+  for (const j of jobs) {
+    const name = `${j.kind} #${j.id} (${j.status})`;
+    await check(`drawer draws the real ${name}`, async () => {
+      await app.openJobDrawer(j.id);
+      await flush();
+      const meta = $("#job-drawer-meta").textContent;
+      const body = $("#job-drawer-body");
+      const text = body.textContent;
+      assert.ok(!text.includes("Could not draw"), text.slice(0, 300));
+      assert.ok(!/\[\d{3}\] /.test(meta), "prefix in the drawer: " + meta.slice(0, 300));
+      const r = j.result;
+      if (j.status !== "succeeded") {
+        if (j.error) assert.ok(meta.includes(j.error), "error not shown");
+        return;
+      }
+      if (r.candidates) {
+        assert.ok(text.includes(`Candidates (${r.candidates.length})`), text.slice(0, 300));
+        if (r.selected) {
+          assert.ok(text.includes(r.selected.release.title), "selected title missing");
+          const labels = buttonLabels(body);
+          if (!r.grabbed) assert.ok(labels.includes("Grab selected"), JSON.stringify(labels));
+        }
+        if (r.media && r.media.links && r.media.links.arr)
+          assert.ok(text.includes("Open in"), "open-in link missing");
+      } else if (r.series && r.seasons) {
+        assert.ok(text.length > 0, "series result drew nothing");
+        for (const s of r.seasons.slice(0, 1))
+          assert.ok(text.includes(String(s.season_number)), "season missing: " + text.slice(0, 300));
+      }
+      if (j.kind === "grab_release") assert.ok(text.toLowerCase().includes("grabbed"), text.slice(0, 300));
+    });
+  }
+}
+
 (async () => {
   await app.main();
   app.wireSeerr();
+  if (process.env.QUEUE_UI_REAL_JOBS) {
+    const files = process.env.QUEUE_UI_REAL_JOBS.split(",").filter((f) => f.trim());
+    await realJobChecks(files);
+    console.log(failures === 0 ? "\nALL REAL JOB RENDER CHECKS PASSED" : `\n${failures} CHECK(S) FAILED`);
+    process.exit(failures === 0 ? 0 : 1);
+  }
   await flush();
 
   await check("startup loads the queue form from config.queue", async () => {

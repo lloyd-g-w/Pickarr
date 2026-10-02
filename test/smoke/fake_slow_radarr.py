@@ -9,7 +9,8 @@ timeout does not affect the rest of the flow. The search delay can be changed
 while running:
 
     GET /__delay?seconds=7    -> {"delay": 7.0}
-    GET /__state              -> {"searches": n, "grabs": [...], "delay": s}
+    GET /__fail?status=500    -> the release search answers that status (0 = stop failing)
+    GET /__state              -> {"searches": n, "grabs": [...], "delay": s, "fail": status}
 """
 
 import json
@@ -22,7 +23,7 @@ from urllib.parse import urlparse, parse_qs
 PORT = int(sys.argv[1])
 DELAY = float(sys.argv[2]) if len(sys.argv) > 2 else 5.0
 
-STATE = {"searches": 0, "grabs": [], "delay": DELAY}
+STATE = {"searches": 0, "grabs": [], "delay": DELAY, "fail": 0}
 LOCK = threading.Lock()
 
 MOVIE = {
@@ -90,6 +91,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/__state":
             with LOCK:
                 return self._send(dict(STATE))
+        if path == "/__fail":
+            status = int(query.get("status", ["0"])[0])
+            with LOCK:
+                STATE["fail"] = status
+            return self._send({"fail": status})
         if path == "/__delay":
             seconds = float(query.get("seconds", ["5"])[0])
             with LOCK:
@@ -119,7 +125,10 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 STATE["searches"] += 1
                 delay = STATE["delay"]
+                fail = STATE["fail"]
             time.sleep(delay)
+            if fail:
+                return self._send({"message": "Search failed (fake)"}, fail)
             return self._send(RELEASES)
 
         return self._send({"message": "not found: " + path}, 404)

@@ -115,6 +115,10 @@ let fake_kind (_ : App_state.t) (params : Yojson.Safe.t) : (Jobs.prepared, strin
                     let* () = Lwt_unix.sleep (float_of_int ms /. 1000.) in
                     match outcome with
                     | "fail" -> Lwt.return (Error ("fake failure " ^ tag))
+                    | "fail502" ->
+                        (* A runner reporting the HTTP status of its failure
+                           (lib/server/status_error.ml). *)
+                        Lwt.return (Error ("[502] Radarr: release search failed for " ^ tag))
                     | "raise" -> failwith ("boom " ^ tag)
                     | _ -> Lwt.return (Ok (`Assoc [ ("tag", `String tag) ])))
               in
@@ -267,6 +271,70 @@ let test_fail_and_raise () =
      let n = String.length "boom r" in
      let rec go i = i + n <= String.length e && (String.sub e i n = "boom r" || go (i + 1)) in
      go 0)
+
+(* A failed runner's "[ddd] " prefix becomes "error_status"; "error" is
+   served (and persisted) without it, and the sync endpoints read the status
+   back through Responses.job_error_status. *)
+let test_error_status () =
+  let dir, state = fresh () in
+  let f = enqueue state (params ~outcome:"fail502" "Come and See") in
+  let plain = enqueue state (params ~outcome:"fail" "p") in
+  let fj = wait_done f and pj = wait_done plain in
+  Alcotest.(check string) "failed" "failed" (status fj);
+  Alcotest.(check string) "error without the prefix"
+    "Radarr: release search failed for Come and See" (str "error" fj);
+  Alcotest.(check (option int)) "error_status" (Some 502) (opt_int "error_status" fj);
+  Alcotest.(check (option int)) "no prefix -> error_status null" None (opt_int "error_status" pj);
+  Alcotest.(check bool) "error_status is present as null" true
+    (member "error_status" pj = Some `Null);
+  Alcotest.(check (pair int string)) "sync status from error_status"
+    (502, "Radarr: release search failed for Come and See")
+    (Pickarr_server.Responses.job_error_status fj);
+  Alcotest.(check (pair int string)) "sync status default" (500, "fake failure p")
+    (Pickarr_server.Responses.job_error_status pj);
+  (* The job.failed event carries the bare message and the status. *)
+  let contains ~needle h =
+    let n = String.length needle in
+    let rec go i = i + n <= String.length h && (String.sub h i n = needle || go (i + 1)) in
+    go 0
+  in
+  let failed, _ = Events.query ~type_prefix:"job.failed" ~job_id:f () in
+  Alcotest.(check int) "one job.failed event" 1 (List.length failed);
+  let ev = List.hd failed in
+  Alcotest.(check bool) "event message has no prefix" false (contains ~needle:"[502]" (str "message" ev));
+  Alcotest.(check (option int)) "event data error_status" (Some 502)
+    (match member "data" ev with Some d -> opt_int "error_status" d | None -> None);
+  (* Persisted without the prefix, and status survives a restart. *)
+  run (Jobs.flush ());
+  let snapshot =
+    In_channel.with_open_bin (Filename.concat dir "jobs.json") In_channel.input_all
+  in
+  Alcotest.(check bool) "jobs.json has no [502] prefix" false
+    (let needle = "[502]" in
+     let n = String.length needle in
+     let rec go i = i + n <= String.length snapshot && (String.sub snapshot i n = needle || go (i + 1)) in
+     go 0);
+  Jobs.reset_for_tests ();
+  run (Events.init ~data_dir:dir);
+  Jobs.start (state_of dir);
+  Alcotest.(check (option int)) "error_status after restart" (Some 502)
+    (opt_int "error_status" (get f))
+
+(* jobs.json written before "error_status" existed: the prefix still on
+   "error" is split off when it is loaded. *)
+let test_error_status_legacy_snapshot () =
+  let dir = temp_dir "pickarr-queue-legacy" in
+  let snapshot =
+    {|{"version":1,"next_id":4,"jobs":[{"id":3,"kind":"fake","status":"failed","label":"Old","source":"ui","instance_id":null,"params":{"tag":"x"},"attempt":1,"retry_of":null,"error":"[404] no instance \"gone\" is configured","created_unix":1.0,"finished_unix":2.0}]}|}
+  in
+  Out_channel.with_open_bin (Filename.concat dir "jobs.json") (fun oc ->
+      Out_channel.output_string oc snapshot);
+  Jobs.reset_for_tests ();
+  run (Events.init ~data_dir:dir);
+  Jobs.start (state_of dir);
+  let j = get 3 in
+  Alcotest.(check string) "prefix split off" "no instance \"gone\" is configured" (str "error" j);
+  Alcotest.(check (option int)) "status kept" (Some 404) (opt_int "error_status" j)
 
 let test_retry () =
   let _, state = fresh () in
@@ -555,6 +623,9 @@ let () =
           Alcotest.test_case "cancel running" `Quick test_cancel_running;
           Alcotest.test_case "cancel an uncancelable runner" `Quick test_cancel_uncancelable_runner;
           Alcotest.test_case "fail and raise" `Quick test_fail_and_raise;
+          Alcotest.test_case "error status" `Quick test_error_status;
+          Alcotest.test_case "error status from an old jobs.json" `Quick
+            test_error_status_legacy_snapshot;
           Alcotest.test_case "retry" `Quick test_retry;
           Alcotest.test_case "wait" `Quick test_wait;
           Alcotest.test_case "clear and list JSON" `Quick test_clear_and_list_json;

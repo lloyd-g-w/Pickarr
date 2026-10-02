@@ -76,7 +76,11 @@ val list :
     Counts cover every job, not just the listed ones. *)
 
 val get : int -> Yojson.Safe.t option
-(** One job, including its result. *)
+(** One job, including its result.
+
+    A failed job's ["error"] never carries a ["[ddd] "] status prefix: when
+    its runner reported one (lib/server/status_error.ml) the code is in
+    ["error_status"] (otherwise [null]). *)
 
 val wait : int -> timeout:float -> Yojson.Safe.t option Lwt.t
 (** The job (with its result) once it has finished; [None] on timeout or for

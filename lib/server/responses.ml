@@ -12,33 +12,20 @@
      "[502] Radarr: release search failed for Come and See (1985): ..."
 
    [status_error] builds such a message and [split_status_error] takes it
-   apart again.  A message without the prefix (an exception, or a job kind
-   that does not care) maps to the caller's default.  The UI may strip a
-   leading "[ddd] " for display. *)
+   apart again (both are lib/server/status_error.ml).  A message without the
+   prefix (an exception, or a job kind that does not care) maps to the
+   caller's default.  The queue strips the prefix when a job fails: the job
+   JSON carries "error" without it and "error_status" with the code, and
+   [job_error_status] reads them back. *)
 
 module Config = Pickarr_core.Config
 
-let status_error ~(status : int) (message : string) : string =
-  Printf.sprintf "[%d] %s" status message
-
-let is_digit c = c >= '0' && c <= '9'
+let status_error ~(status : int) (message : string) : string = Status_error.make ~status message
 
 (** [split_status_error ~default s] is [(status, message)]: the status from a
     leading ["[ddd] "] (100..599), else [default] and [s] unchanged. *)
 let split_status_error ~(default : int) (s : string) : int * string =
-  let n = String.length s in
-  if n >= 6 && s.[0] = '[' && is_digit s.[1] && is_digit s.[2] && is_digit s.[3] && s.[4] = ']'
-  then
-    let status = int_of_string (String.sub s 1 3) in
-    if status >= 100 && status <= 599 then
-      let rest = String.sub s 5 (n - 5) in
-      let rest =
-        if String.length rest > 0 && rest.[0] = ' ' then String.sub rest 1 (String.length rest - 1)
-        else rest
-      in
-      (status, rest)
-    else (default, s)
-  else (default, s)
+  Status_error.split_default ~default s
 
 (** The HTTP status and message of a selection error, as the routes have
     always answered them. *)
@@ -81,3 +68,16 @@ let decorate (state : App_state.t) ?(instance_id : string option) (json : Yojson
   let config = App_state.config state in
   let instance = Option.bind instance_id (App_state.find_instance state) in
   Library.decorate ~config ~instance json
+
+(** The HTTP status and message of a failed job's JSON: "error_status" when
+    present, else a status prefix still on "error" (jobs written by an older
+    version), else [default]. *)
+let job_error_status ?(default = 500) (job : Yojson.Safe.t) : int * string =
+  let field k = match job with `Assoc l -> List.assoc_opt k l | _ -> None in
+  let message =
+    match field "error" with Some (`String s) when String.trim s <> "" -> s | _ -> "the job failed"
+  in
+  match field "error_status" with
+  | Some (`Int status) when status >= 100 && status <= 599 ->
+      (status, snd (Status_error.split message))
+  | _ -> split_status_error ~default message

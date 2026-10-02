@@ -63,6 +63,10 @@ type job = {
   attempt : int;
   retry_of : int option;
   mutable error : string option;
+      (** Without any "[ddd] " status prefix; see [error_status]. *)
+  mutable error_status : int option;
+      (** The HTTP status a failed runner reported through a "[ddd] " prefix
+          (lib/server/status_error.ml), for the endpoints that wait on a job. *)
   mutable result : Yojson.Safe.t option;
   mutable run : (ctx -> (Yojson.Safe.t, string) result Lwt.t) option;
       (** Present while queued; dropped once the job has started. *)
@@ -162,6 +166,7 @@ let job_to_json ?(include_result = true) (j : job) : Yojson.Safe.t =
        ("attempt", `Int j.attempt);
        ("retry_of", opt_int j.retry_of);
        ("error", opt_string j.error);
+       ("error_status", opt_int j.error_status);
      ]
     @ if include_result then [ ("result", match j.result with Some r -> r | None -> `Null) ] else [])
 
@@ -318,12 +323,14 @@ let on_done (j : job) outcome =
         j.status <- Succeeded;
         j.result <- Some result;
         job_event j "job.succeeded" (Printf.sprintf "Done: %s%s" j.label (seconds j))
-    | `Error message ->
+    | `Error raw ->
+        let status, message = Status_error.split raw in
         j.status <- Failed;
         j.error <- Some message;
+        j.error_status <- status;
         Log_buffer.infof "job #%d (%s) failed: %s" j.id j.label message;
         job_event ~level:Events.Error
-          ~data:[ ("error", `String message) ]
+          ~data:[ ("error", `String message); ("error_status", opt_int status) ]
           j "job.failed"
           (Printf.sprintf "Failed: %s: %s" j.label message)
     | `Cancelled ->
@@ -471,6 +478,7 @@ let add_job ~kind ~source ~params ~attempt ~retry_of (p : prepared) : job =
       attempt;
       retry_of;
       error = None;
+      error_status = None;
       result = None;
       run = Some p.run;
       runner = None;
@@ -645,7 +653,13 @@ let load state =
                           progress = str "progress" item;
                           attempt = Option.value ~default:1 (int "attempt" item);
                           retry_of = int "retry_of" item;
-                          error = str "error" item;
+                          (* Jobs written before "error_status" existed may
+                             still carry the prefix on "error". *)
+                          error = Option.map (fun e -> snd (Status_error.split e)) (str "error" item);
+                          error_status =
+                            (match int "error_status" item with
+                            | Some s -> Some s
+                            | None -> Option.bind (str "error" item) (fun e -> fst (Status_error.split e)));
                           result =
                             (match member "result" item with
                             | None | Some `Null -> None
@@ -669,10 +683,12 @@ let load state =
                           incr restored;
                           match prepare state kind params with
                           | Ok p -> j.run <- Some p.run
-                          | Error e ->
+                          | Error raw ->
+                              let status, e = Status_error.split raw in
                               j.status <- Failed;
                               j.finished_at <- Some (now ());
                               j.error <- Some ("could not be restarted: " ^ e);
+                              j.error_status <- status;
                               job_event ~level:Events.Error j "job.failed"
                                 (Printf.sprintf "Failed: %s: could not be restarted: %s" j.label e))
                       | Succeeded | Failed | Cancelled -> ())

@@ -409,10 +409,7 @@ let respond_job (job : Yojson.Safe.t) =
       | `Assoc fields -> respond_json (Option.value (List.assoc_opt "result" fields) ~default:`Null)
       | _ -> respond_json `Null)
   | Some "failed" ->
-      let code, message =
-        Responses.split_status_error ~default:500
-          (Option.value (string_field "error" job) ~default:"the job failed")
-      in
+      let code, message = Responses.job_error_status ~default:500 job in
       error_status code message
   | Some "cancelled" ->
       error_json `Conflict
@@ -1066,7 +1063,7 @@ let seerr_decide (state : App_state.t) ~(approve : bool) request =
               | Ok job -> [ ("job_id", Option.fold ~none:`Null ~some:(fun i -> `Int i) (int_member "id" job)) ]
               | Error e ->
                   Log_buffer.warnf "seerr: could not queue the fulfilment of request #%d: %s"
-                    request_id e;
+                    request_id (snd (Responses.split_status_error ~default:400 e));
                   [ ("job_id", `Null) ]
           in
           respond_json
@@ -1223,7 +1220,10 @@ let post_job (state : App_state.t) request =
           let source = Option.value (string_field "source" body) ~default:"api" in
           match Jobs.enqueue state ~source kind params with
           | Ok job -> respond_json ~status:`Accepted (`Assoc [ ("job", job) ])
-          | Error e -> error_json `Bad_Request e))
+          | Error e ->
+              (* Kind parsers report e.g. "[404] no instance ..." *)
+              let code, message = Responses.split_status_error ~default:400 e in
+              error_status code message))
 
 let get_jobs (_ : App_state.t) request =
   let statuses =
@@ -1271,7 +1271,12 @@ let retry_job (state : App_state.t) request =
       | Some _ -> (
           match Jobs.retry state id with
           | Ok job -> respond_json ~status:`Accepted (`Assoc [ ("job", job) ])
-          | Error e -> error_json `Conflict e))
+          | Error e ->
+              (* "only failed or cancelled jobs ..." -> 409; a kind parser that
+                 now rejects the params (e.g. the instance was removed) carries
+                 its own status. *)
+              let code, message = Responses.split_status_error ~default:409 e in
+              error_status code message))
 
 let delete_jobs (_ : App_state.t) request =
   match Dream.query request "status" with

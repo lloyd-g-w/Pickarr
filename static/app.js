@@ -2034,6 +2034,7 @@ const JOB_KINDS = {
   grab_best: { icon: "\u2B07", label: "Grab" },
   grab_release: { icon: "\u2B07", label: "Grab release" },
   seerr_select: { icon: "\u2709", label: "Seerr request" },
+  seerr_fulfil: { icon: "\u2709", label: "Seerr fulfil" },
   automatic_pass: { icon: "\u27F3", label: "Automatic pass" },
   seerr_pass: { icon: "\u27F3", label: "Seerr pass" },
   seerr_webhook: { icon: "\u26A1", label: "Seerr webhook" },
@@ -2042,6 +2043,28 @@ const JOB_KINDS = {
 function jobKindLabel(kind) {
   const k = JOB_KINDS[kind];
   return k ? `${k.icon} ${k.label}` : kind || "job";
+}
+
+/* A hint under the kind for the optional params some kinds take: "gate"
+   (a webhook selection that only grabs above the automatic confidence
+   gate) and "release_title" (the release a grab_release job asked for). */
+function jobKindHint(job) {
+  const p = job.params || {};
+  if (p.gate === "automatic") return "automatic gate: grabs only if the automatic rules allow it";
+  if (job.kind === "grab_release" && p.release_title) return p.release_title;
+  return null;
+}
+
+/* The server stores job errors without the "[ddd] " HTTP status prefix
+   (the status is in job.error_status); strip it anyway so an old job or an
+   older server never shows "[502] ..." to the user. */
+function stripStatusPrefix(message) {
+  return typeof message === "string" ? message.replace(/^\[\d{3}\] /, "") : message;
+}
+
+function jobErrorText(job, fallback) {
+  const e = stripStatusPrefix(job && job.error);
+  return e || fallback || "";
 }
 
 /* "queued · position 2", "running", "failed"... */
@@ -2183,7 +2206,7 @@ function renderJobLine(node, job, opts) {
       ok = false;
       break;
     default:
-      text = `#${job.id} failed: ${job.error || "unknown error"}`;
+      text = `#${job.id} failed: ${jobErrorText(job, "unknown error")}`;
       ok = false;
   }
   if (!node) {
@@ -2276,7 +2299,7 @@ function followJob(job, o, key) {
     if (!current(j)) return;
     renderJobLine(o.statusNode, j, lineOpts);
     if (j.status === "succeeded" && o.onResult) o.onResult(j.result || {}, j);
-    if (j.status !== "succeeded") toast(`#${j.id} ${j.status}: ${j.error || j.label || ""}`, true);
+    if (j.status !== "succeeded") toast(`#${j.id} ${j.status}: ${jobErrorText(j, j.label || "")}`, true);
   };
   if (FINISHED_STATUSES.has(job.status)) {
     finish(job);
@@ -2450,7 +2473,12 @@ function queueRow(job) {
     { class: `job-row job-${job.status}` },
     el("td", {}, `#${job.id}`),
     el("td", {}, jobStatusPill(job)),
-    el("td", { class: "nowrap" }, jobKindLabel(job.kind)),
+    el(
+      "td",
+      {},
+      el("span", { class: "nowrap" }, jobKindLabel(job.kind)),
+      jobKindHint(job) ? el("div", { class: "hint" }, jobKindHint(job)) : null
+    ),
     el(
       "td",
       {},
@@ -2466,7 +2494,7 @@ function queueRow(job) {
       "td",
       {},
       job.status === "failed" || job.status === "cancelled"
-        ? el("span", { class: "job-error" }, job.error || job.status)
+        ? el("span", { class: "job-error" }, jobErrorText(job, job.status))
         : num(job.progress, "")
     ),
     el("td", { class: "nowrap" }, ...jobActions(job))
@@ -2557,7 +2585,7 @@ function renderJobDrawer(job) {
   $("#job-drawer-title").textContent = `Job #${job.id} · ${job.label || jobKindLabel(job.kind)}`;
   const rows = [
     ["Status", jobStatusText(job)],
-    ["Kind", jobKindLabel(job.kind)],
+    ["Kind", jobKindLabel(job.kind) + (jobKindHint(job) ? ` · ${jobKindHint(job)}` : "")],
     ["Source", num(job.source)],
     ["Instance", num(job.instance_id)],
     ["Created", fmtTime(job.created_at)],
@@ -2578,7 +2606,7 @@ function renderJobDrawer(job) {
     job.progress && !FINISHED_STATUSES.has(job.status)
       ? el("p", { class: "hint" }, job.progress)
       : null,
-    job.error ? el("div", { class: "conflicts" }, job.error) : null,
+    job.error ? el("div", { class: "conflicts" }, jobErrorText(job)) : null,
     el("p", {}, ...jobActions(job).slice(1)),
     el(
       "details",
@@ -2624,6 +2652,9 @@ function renderJobResult(job, box) {
       case "seerr_select":
         renderSeerrPayload(result, content, ctx);
         break;
+      case "seerr_fulfil":
+        renderSeerrFulfilResult(result, content);
+        break;
       case "automatic_pass":
         content.appendChild(el("p", { class: "hint" }, automaticSummaryText(result)));
         content.appendChild(renderAutomaticResults(result.results || [], el("div", {})));
@@ -2633,7 +2664,12 @@ function renderJobResult(job, box) {
         content.appendChild(renderSeerrResults(result.results || [], el("div", {})));
         break;
       default:
-        content.appendChild(el("pre", {}, JSON.stringify(result, null, 2)));
+        /* Kinds this page does not know yet: still use the selection
+           renderer when the result is a selection. */
+        if (result.candidates) renderSelectionResult(result, content, ctx);
+        else if (Array.isArray(result.results))
+          content.appendChild(renderSeerrResults(result.results, el("div", {}), "Outcome"));
+        else content.appendChild(el("pre", {}, JSON.stringify(result, null, 2)));
     }
   } catch (e) {
     content.replaceChildren(el("p", { class: "result bad" }, "Could not draw this result: " + e.message));
@@ -2642,6 +2678,51 @@ function renderJobResult(job, box) {
     content,
     el("details", {}, el("summary", {}, "Raw result"), el("pre", {}, JSON.stringify(result, null, 2)))
   );
+}
+
+/* A seerr_fulfil job (queued by Approve, or by the request endpoint
+   /fulfil): {request_id, request: compact request, results: [per-request
+   outcome]}. Shows the request, what happened to it, and opens it in the
+   Requests panel for a manual search. */
+function renderSeerrFulfilResult(result, content) {
+  const request = result.request || {};
+  const title =
+    request.title
+      ? `${request.title}${request.year ? ` (${request.year})` : ""}`
+      : `Seerr request #${num(result.request_id, "?")}`;
+  content.appendChild(
+    el(
+      "p",
+      {},
+      el("strong", {}, title),
+      request.is4k ? el("span", { class: "badge" }, "4K") : null,
+      request.status_label ? el("span", { class: "hint" }, ` · ${request.status_label}`) : null,
+      " ",
+      ...openInLinks(request.links, request.type === "movie" ? "radarr" : "sonarr")
+    )
+  );
+  const results = Array.isArray(result.results) ? result.results : [];
+  if (results.length) content.appendChild(renderSeerrResults(results, el("div", {}), "Outcome"));
+  else content.appendChild(el("p", { class: "hint" }, "Nothing to do for this request."));
+  if (request.id !== undefined && request.id !== null)
+    content.appendChild(
+      el(
+        "p",
+        {},
+        el(
+          "button",
+          {
+            class: "small",
+            onclick: () => {
+              closeJobDrawer();
+              showTab("requests");
+              openSeerrRequest(request);
+            },
+          },
+          "Open in the Requests panel"
+        )
+      )
+    );
 }
 
 function automaticSummaryText(summary) {
@@ -3381,7 +3462,7 @@ function seasonOutcomeLine(s) {
 
 /* Draws into [target] (default: the Requests tab's last-pass table) and
    returns it, so the job drawer can reuse it. */
-function renderSeerrResults(results, target) {
+function renderSeerrResults(results, target, heading) {
   const container = target || $("#seerr-results");
   if (!container) return container;
   if (!results.length) {
@@ -3389,7 +3470,7 @@ function renderSeerrResults(results, target) {
     return container;
   }
   container.replaceChildren(
-    el("h4", {}, "Last pass"),
+    el("h4", {}, heading || "Last pass"),
     el(
       "table",
       {},
@@ -3434,13 +3515,36 @@ async function seerrAction(requestId, action, statusNode) {
   try {
     const r = await api(`/api/seerr/requests/${requestId}/${action}`, { method: "POST" });
     say(r.action || "done", true);
-    /* Approving searches and grabs in the background, so the lists are
-       refreshed a moment later as well. */
     loadSeerrStatus();
+    if (r.job_id !== null && r.job_id !== undefined) {
+      /* Approving queues the fulfilment (search + grab) as a job: show it
+         like every other queued job and refresh the lists when it is done. */
+      let job;
+      try {
+        job = (await api(`/api/jobs/${r.job_id}`)).job;
+      } catch (e) {
+        job = { id: r.job_id, kind: "seerr_fulfil", status: "queued", label: `Seerr request #${requestId}` };
+      }
+      toastJob(job);
+      followJob(job, {
+        statusNode: statusNode,
+        describeDone: (result) => {
+          const outcome = (result.results || [])[0] || {};
+          return `${r.action || "approved"}: ${outcome.error || outcome.skipped || outcome.action || outcome.selected || "done"}`;
+        },
+        onResult: () => {
+          loadSeerrRequests();
+          loadSeerrStatus();
+        },
+      });
+      pollQueueBadge();
+      return;
+    }
+    /* Nothing was queued (declined): refresh the lists. */
     setTimeout(() => {
       loadSeerrRequests();
       loadSeerrStatus();
-    }, 4000);
+    }, 1000);
   } catch (e) {
     say(e.message, false);
     toast(e.message, true);

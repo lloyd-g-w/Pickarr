@@ -132,6 +132,7 @@ const KINDS = new Set([
   "grab_best",
   "grab_release",
   "seerr_select",
+  "seerr_fulfil",
   "automatic_pass",
   "seerr_pass",
   "seerr_webhook",
@@ -314,6 +315,11 @@ const backend = {
     if (method === "GET" && p === "/api/automatic/status") return [200, { enabled: false }];
     if (method === "GET" && p === "/api/seerr/status") return [200, { enabled: true, configured: true }];
     if (method === "GET" && p === "/api/seerr/requests") return [200, { results: [] }];
+    if ((m = /^\/api\/seerr\/requests\/(\d+)\/approve$/.exec(p)) && method === "POST") {
+      /* As the server does: approving queues a seerr_fulfil job. */
+      const job = this.add("seerr_fulfil", { request_id: Number(m[1]) }, { label: `Seerr request #${m[1]} · fulfil` });
+      return [200, { ok: true, action: "approved", request: { id: Number(m[1]) }, job_id: job.id }];
+    }
     if ((m = /^\/api\/seerr\/requests\/(\d+)\/resolve$/.exec(p)) && method === "POST")
       return [
         200,
@@ -385,7 +391,7 @@ return {
   tickJobWatchers, pollQueueBadge, loadQueue, setQueueFilter, queueView, loadEvents, pollEvents,
   setEventType, toggleEventsPause, eventsView, openJobDrawer, loadDashboardQueue,
   loadDashboardActivity, openSeerrRequest, renderSelectionResult, fmtDuration, jobWatchers,
-  uiJobKeys, pollLoops, startBackgroundPolling, watchJob,
+  uiJobKeys, pollLoops, startBackgroundPolling, watchJob, seerrAction, stripStatusPrefix,
 };`
 )();
 
@@ -1068,6 +1074,80 @@ async function check(label, fn) {
       await flush();
     }
     assert.ok(!timers.some((t) => t.ms === 1000), "watch timer must stop with no watchers");
+  });
+
+  await check("a [ddd] status prefix on job.error is never shown", async () => {
+    assert.strictEqual(app.stripStatusPrefix("[502] Radarr: down"), "Radarr: down");
+    assert.strictEqual(app.stripStatusPrefix("Radarr: [502] stays"), "Radarr: [502] stays");
+    const j = backend.add("search", { instance_id: "radarr", target: { kind: "movie", media_id: 9502 } });
+    backend.fail(j.id, "[502] Radarr: release search failed for Come and See (1985)");
+    await app.loadQueue();
+    await flush();
+    const row = rowsOf($("#queue-list")).find((r) => r.children[0].textContent === `#${j.id}`);
+    assert.ok(row, "failed job not listed");
+    assert.ok(row.textContent.includes("Radarr: release search failed"), row.textContent);
+    assert.ok(!row.textContent.includes("[502]"), row.textContent);
+    await app.openJobDrawer(j.id);
+    await flush();
+    assert.ok(!$("#job-drawer-meta").textContent.includes("[502]"), $("#job-drawer-meta").textContent);
+    /* The inline status line and toast are covered by the Approve check. */
+  });
+
+  await check("seerr_fulfil: kind label, and View draws the request outcome", async () => {
+    const j = backend.add("seerr_fulfil", { request_id: 41 }, { label: "Seerr request #41 · fulfil" });
+    backend.finish(j.id, {
+      request_id: 41,
+      request: Object.assign({}, seerrRequest, { links: { seerr: "http://seerr:5055/movie/603" } }),
+      results: [{ request_id: 41, request: "Some Movie (2024)", action: "grabbed", selected: "Some.Movie.2024.1080p-FLUX", grabbed: true }],
+    });
+    await app.loadQueue();
+    await flush();
+    const row = rowsOf($("#queue-list")).find((r) => r.children[0].textContent === `#${j.id}`);
+    assert.ok(row.textContent.includes("Seerr fulfil"), row.textContent);
+    await app.openJobDrawer(j.id);
+    await flush();
+    const body = $("#job-drawer-body");
+    assert.ok(body.textContent.includes("Some Movie (2024)"), body.textContent.slice(0, 300));
+    assert.ok(body.textContent.includes("Outcome"), body.textContent.slice(0, 300));
+    assert.ok(body.textContent.includes("Some.Movie.2024.1080p-FLUX"), body.textContent.slice(0, 300));
+    assert.ok(body.textContent.includes("Open in Seerr"), body.textContent.slice(0, 300));
+    assert.ok(buttonLabels(body).includes("Open in the Requests panel"), JSON.stringify(buttonLabels(body)));
+  });
+
+  await check("grab_best with gate and grab_release with release_title get a hint", async () => {
+    const g = backend.add("grab_best", { instance_id: "radarr", target: { kind: "movie", media_id: 31 }, gate: "automatic" });
+    const r = backend.add("grab_release", {
+      instance_id: "radarr",
+      target: { kind: "movie", media_id: 32 },
+      release_id: "x",
+      release_title: "Exact.Release.Title-GRP",
+    });
+    await app.loadQueue();
+    await flush();
+    const rows = rowsOf($("#queue-list"));
+    const gr = rows.find((x) => x.children[0].textContent === `#${g.id}`);
+    const rr = rows.find((x) => x.children[0].textContent === `#${r.id}`);
+    assert.ok(gr.textContent.includes("automatic gate"), gr.textContent);
+    assert.ok(rr.textContent.includes("Exact.Release.Title-GRP"), rr.textContent);
+  });
+
+  await check("Approve in the Requests tab tracks the queued fulfilment job", async () => {
+    const status = document.createElement("span");
+    const before = backend.jobs.length;
+    await app.seerrAction(43, "approve", status);
+    await flush();
+    assert.strictEqual(backend.jobs.length, before + 1, "approve must queue exactly one job");
+    const job = backend.jobs[backend.jobs.length - 1];
+    assert.strictEqual(job.kind, "seerr_fulfil");
+    assert.ok(app.jobWatchers.has(job.id), "the fulfil job is not followed");
+    assert.ok(status.textContent.includes(`#${job.id}`), status.textContent);
+    assert.ok($("#toast").textContent.includes(`Queued #${job.id}`), $("#toast").textContent);
+    backend.fail(job.id, "[502] Seerr: request #43 could not be fulfilled");
+    await app.tickJobWatchers();
+    await flush();
+    assert.ok(status.textContent.includes("could not be fulfilled"), status.textContent);
+    assert.ok(!status.textContent.includes("[502]"), status.textContent);
+    assert.ok(!$("#toast").textContent.includes("[502]"), $("#toast").textContent);
   });
 
   await check("fmtDuration formats ms, seconds and minutes", async () => {

@@ -9,6 +9,11 @@ const state = {
   automatic: null,
   lastResult: null,
   proposal: null,
+  activeTab: "dashboard",
+  /* the last search job started from the Search page; only its result is
+     drawn there */
+  selectJobId: null,
+  queueCounts: {},
 };
 
 /* Sonarr/Radarr only answer an interactive search once every indexer has
@@ -38,13 +43,30 @@ const el = (tag, attrs = {}, ...children) => {
   return node;
 };
 
-function toast(message, isError) {
+/* [action] is an optional {label, onclick} drawn as a button after the
+   message, e.g. "View queue" after a job was queued. */
+function toast(message, isError, action) {
   const t = $("#toast");
-  t.textContent = message;
+  const parts = [el("span", {}, String(message))];
+  if (action)
+    parts.push(
+      el(
+        "button",
+        {
+          class: "small toast-action",
+          onclick: () => {
+            t.hidden = true;
+            action.onclick();
+          },
+        },
+        action.label
+      )
+    );
+  t.replaceChildren(...parts);
   t.className = isError ? "bad" : "";
   t.hidden = false;
   clearTimeout(toast._timer);
-  toast._timer = setTimeout(() => (t.hidden = true), isError ? 8000 : 3500);
+  toast._timer = setTimeout(() => (t.hidden = true), isError ? 8000 : action ? 6000 : 3500);
 }
 
 function setResult(selector, message, ok) {
@@ -86,6 +108,37 @@ async function api(path, options = {}) {
 
 const fmtGiB = (bytes) => (Number(bytes) / 1024 ** 3).toFixed(2) + " GiB";
 const num = (v, d = "—") => (v === null || v === undefined ? d : v);
+
+/* 850 ms · 12.3 s · 2 m 05 s */
+function fmtDuration(ms) {
+  if (ms === null || ms === undefined || Number.isNaN(Number(ms))) return "—";
+  const n = Number(ms);
+  if (n < 1000) return `${Math.round(n)} ms`;
+  if (n < 60000) return `${(n / 1000).toFixed(1)} s`;
+  const minutes = Math.floor(n / 60000);
+  const seconds = Math.round((n % 60000) / 1000);
+  return `${minutes} m ${String(seconds).padStart(2, "0")} s`;
+}
+
+/* A server timestamp as local time; today's only as HH:MM:SS. */
+function fmtTime(ts) {
+  if (!ts) return "—";
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return String(ts);
+  const pad = (x) => String(x).padStart(2, "0");
+  const time = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  const now = new Date();
+  if (d.toDateString() === now.toDateString()) return time;
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${time}`;
+}
+
+/* A button whose handler gets the button itself, so a queued job can show
+   its busy state on exactly the button that started it. */
+function actionButton(label, cls, handler, title) {
+  const button = el("button", { class: cls || "small", title: title || false }, label);
+  button.addEventListener("click", () => handler(button));
+  return button;
+}
 
 /* ------------------------------------------------------------------ */
 /* generic form builder                                               */
@@ -467,11 +520,13 @@ function renderAutomaticStatus() {
   renderAutomaticResults(a.last_results || []);
 }
 
-function renderAutomaticResults(results) {
-  const container = $("#automatic-results");
+/* Draws into [target] (default: the dashboard's last-pass table) and
+   returns it, so the job drawer can reuse it. */
+function renderAutomaticResults(results, target) {
+  const container = target || $("#automatic-results");
   if (!results.length) {
     container.replaceChildren();
-    return;
+    return container;
   }
   container.replaceChildren(
     el("h3", {}, "Last pass"),
@@ -500,6 +555,7 @@ function renderAutomaticResults(results) {
       )
     )
   );
+  return container;
 }
 
 /* ------------------------------------------------------------------ */
@@ -522,20 +578,9 @@ function describeApiError(e) {
   return e.status ? `HTTP ${e.status} · ${e.message}` : e.message;
 }
 
-/* The current Select-page target, so the per-candidate Grab buttons know what
-   to re-search. */
+/* The instance of the Search page's last result, so its per-candidate Grab
+   buttons know where to grab. */
 let selectTarget = null;
-
-/* Where a candidate of [media] must be grabbed. A season pack has no media id
-   of its own, so it is named by series id and season number. */
-function grabUrlFor(instanceId, media) {
-  const inst = encodeURIComponent(instanceId);
-  if (media && media.media_kind === "season") {
-    const seriesId = media.series_id === undefined ? media.media_id : media.series_id;
-    return `/api/grab/${inst}/season/${seriesId}/${media.season_number}`;
-  }
-  return `/api/grab/${inst}/${media.media_id}`;
-}
 
 /* A rendered selection carries everything its Grab buttons need: which
    instance to talk to, which media the candidates belong to, where to write
@@ -544,91 +589,141 @@ function grabUrlFor(instanceId, media) {
 function selectPageContext() {
   return {
     instanceId: selectTarget && selectTarget.instanceId,
+    statusNode: $("#select-status"),
     setStatus: (message, ok) => setResult("#select-status", message, ok),
   };
+}
+
+function instanceById(id) {
+  const instances = (state.config && state.config.instances) || [];
+  return instances.find((i) => i.id === id) || null;
+}
+
+/* A movie id on Radarr, an episode id on Sonarr. */
+function mediaTarget(instanceId, mediaId) {
+  const inst = instanceById(instanceId);
+  return { kind: inst && inst.app === "radarr" ? "movie" : "episode", media_id: mediaId };
+}
+
+/* The target a release from a result card belongs to. A season pack has no
+   media id of its own, so it is named by series id and season number. */
+function releaseTarget(media, instanceId) {
+  const m = media || {};
+  if (m.media_kind === "season")
+    return {
+      kind: "season",
+      series_id: m.series_id === undefined || m.series_id === null ? m.media_id : m.series_id,
+      season_number: m.season_number,
+    };
+  if (m.media_kind === "movie" || m.media_kind === "episode")
+    return { kind: m.media_kind, media_id: m.media_id };
+  if (m.app === "radarr") return { kind: "movie", media_id: m.media_id };
+  if (m.app === "sonarr") return { kind: "episode", media_id: m.media_id };
+  return mediaTarget(instanceId, m.media_id);
+}
+
+function searchJobParams(instanceId, target) {
+  const params = {
+    instance_id: instanceId,
+    target: target,
+    use_ai: !!($("#select-use-ai") && $("#select-use-ai").checked),
+  };
+  const instruction = (($("#select-instruction") && $("#select-instruction").value) || "").trim();
+  if (instruction) params.instruction = instruction;
+  return params;
+}
+
+function describeSearchDone(result, job) {
+  if (result && result.summary && result.seasons) {
+    const s = result.summary;
+    return `done: ${s.seasons || 0} season(s), ${s.grabbed || 0} grabbed`;
+  }
+  const took = ` in ${fmtDuration(job.duration_ms)}`;
+  if (job.kind === "grab_best")
+    return result.grabbed
+      ? `grabbed${took}`
+      : `searched${took}, not grabbed${result.grab_error ? `: ${result.grab_error}` : ""}`;
+  return `done${took}`;
+}
+
+/* Search (grab=false) or search-and-grab (grab=true) one target from the
+   Search page. The work runs as a queued job; its status shows next to the
+   buttons and its result is drawn below when it finishes — unless another
+   search was started from this page in the meantime. */
+function runSearchPageJob(grab, target, button) {
+  const instanceId = $("#select-instance").value;
+  if (!instanceId) return toast("No enabled instance: add one on the Instances tab first", true);
+  const params = searchJobParams(instanceId, target);
+  return runJob(grab ? "grab_best" : "search", params, {
+    button,
+    statusNode: $("#select-status"),
+    waitHint: SEARCH_WAIT_HINT,
+    describeDone: describeSearchDone,
+    isSuccess: (result, job) => job.kind !== "grab_best" || !!result.grabbed || !!result.summary,
+    onStart: (job) => {
+      state.selectJobId = job.id;
+      $("#select-result").replaceChildren();
+    },
+    isCurrent: (job) => state.selectJobId === job.id,
+    onResult: (result) => {
+      state.lastResult = result;
+      selectTarget = {
+        instanceId,
+        mediaId: target.media_id !== undefined ? target.media_id : target.series_id,
+      };
+      if (target.kind === "series") renderSeriesResult(result, null, selectPageContext());
+      else renderSelectionResult(result, null, selectPageContext());
+      if (grab) loadHistory();
+    },
+  });
 }
 
 /* Search (and optionally grab) one movie or episode. The media id comes from
    the picked library item, a picked episode or a wanted row — never from a
    field the user has to fill in by hand. */
-async function runSelection(grab, mediaId) {
+function runSelection(grab, mediaId, button) {
   const instanceId = $("#select-instance").value;
   if (!instanceId)
     return toast("No enabled instance: add one on the Instances tab first", true);
   if (!Number.isInteger(mediaId) || mediaId < 1)
     return toast("Pick a movie or an episode first", true);
-  const body = {
-    grab: grab,
-    use_ai: $("#select-use-ai").checked,
-  };
-  const instruction = $("#select-instruction").value.trim();
-  if (instruction) body.instruction = instruction;
-  setResult(
-    "#select-status",
-    (grab ? "searching and grabbing…" : "searching…") + SEARCH_WAIT_HINT,
-    true
-  );
-  $("#select-result").replaceChildren();
-  try {
-    const result = await api(`/api/select/${encodeURIComponent(instanceId)}/${mediaId}`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
-    state.lastResult = result;
-    selectTarget = { instanceId, mediaId };
-    setResult("#select-status", `done in ${result.duration_ms} ms`, true);
-    renderSelectionResult(result, null, selectPageContext());
-    if (grab) loadHistory();
-  } catch (e) {
-    setResult("#select-status", describeApiError(e), false);
-    toast(describeApiError(e), true);
-  }
+  return runSearchPageJob(grab, mediaTarget(instanceId, mediaId), button);
 }
 
 /* Grab one release from a search result: the winner ("Grab selected") or any
-   other candidate ("Grab this").  The server re-runs the search first, because
-   Sonarr/Radarr only accept releases from their own last search; the UI itself
-   does not search again and simply redraws with the answer. */
+   other candidate ("Grab this"). It is queued as a grab_release job; guid and
+   indexer_id identify the release even if its id changed since the search,
+   and the server still only grabs a release that passes the hard rules. When
+   the job finishes, the card it came from is redrawn with the outcome. */
 async function grabCandidate(release, button, ctx) {
   if (!ctx || !ctx.instanceId || !ctx.media) return toast("Search first", true);
-  if (!confirm(`Grab this release now?\n\n${release.title}`)) return;
-  const previous = button.textContent;
-  /* A grab can take a while: it may have to search again if Sonarr/Radarr
-     dropped the release from their 30-minute cache, and it waits briefly to
-     see the download queue. Disabling the button also stops double grabs. */
-  button.disabled = true;
-  button.textContent = "grabbing…";
-  ctx.setStatus("grabbing…" + GRAB_WAIT_HINT, true);
-  try {
-    const result = await api(grabUrlFor(ctx.instanceId, ctx.media), {
-      method: "POST",
-      /* guid and indexer_id identify the release even if its id changed
-         since the search; the server still only grabs a release it has
-         searched and checked against the hard rules. */
-      body: JSON.stringify({
-        release_id: release.id,
-        guid: release.guid || undefined,
-        indexer_id: release.indexer_id || undefined,
-      }),
-    });
-    state.lastResult = result;
-    ctx.setStatus(
+  if (!confirm(`Grab this release now?\n\n${release.title}`)) return null;
+  const params = {
+    instance_id: ctx.instanceId,
+    target: releaseTarget(ctx.media, ctx.instanceId),
+    release_id: release.id,
+  };
+  if (release.guid) params.guid = release.guid;
+  if (release.indexer_id) params.indexer_id = release.indexer_id;
+  return runJob("grab_release", params, {
+    button,
+    statusNode: ctx.statusNode || null,
+    setStatus: ctx.setStatus,
+    waitHint: GRAB_WAIT_HINT,
+    describeDone: (result) =>
       result.grabbed
-        ? "grabbed" + (result.grab_notes && result.grab_notes.length ? ` · ${result.grab_notes.join(" · ")}` : "")
+        ? "grabbed" +
+          (result.grab_notes && result.grab_notes.length ? ` · ${result.grab_notes.join(" · ")}` : "")
         : `not grabbed: ${result.grab_error || "unknown reason"}`,
-      result.grabbed
-    );
-    ctx.rerender(result);
-    loadHistory();
-  } catch (e) {
-    ctx.setStatus(describeApiError(e), false);
-    toast(describeApiError(e), true);
-  } finally {
-    /* rerender() replaces this button, but on an error path it stays on the
-       page and must be usable again. */
-    button.disabled = false;
-    button.textContent = previous;
-  }
+    isSuccess: (result) => !!result.grabbed,
+    onResult: (result) => {
+      state.lastResult = result;
+      /* Redraw the card the release came from, unless that area shows
+         something else by now. */
+      if (!ctx.stillShowing || ctx.stillShowing()) ctx.rerender(result);
+      loadHistory();
+    },
+  });
 }
 
 function releaseRow(scored, isWinner, ctx) {
@@ -664,11 +759,17 @@ function renderSelectionResult(result, target, ctx) {
   const media = result.media || {};
   /* Per-result context: the candidates below belong to this media, and a
      grab redraws this very container. */
+  /* Each render stamps its container, so a grab that finishes after the
+     area was redrawn with another result does not overwrite it. */
+  container._renderSeq = (container._renderSeq || 0) + 1;
+  const seq = container._renderSeq;
   const rowContext = {
     instanceId: base.instanceId,
     media: media,
     grabbed: !!result.grabbed,
+    statusNode: base.statusNode === undefined ? $("#select-status") : base.statusNode,
     setStatus: base.setStatus || ((m, ok) => setResult("#select-status", m, ok)),
+    stillShowing: () => container._renderSeq === seq,
     rerender: (updated) => renderSelectionResult(updated, container, base),
   };
 
@@ -874,13 +975,6 @@ function selectedInstance() {
   return instances.find((i) => i.id === id) || null;
 }
 
-function selectionBody(grab) {
-  const body = { grab: grab, use_ai: $("#select-use-ai").checked };
-  const instruction = $("#select-instruction").value.trim();
-  if (instruction) body.instruction = instruction;
-  return body;
-}
-
 /* "Open in Sonarr" / "Open in Seerr" for anything that carries a links
    object. Returns an empty array when nothing is linkable, so callers can
    splat it straight into el(). */
@@ -1055,23 +1149,12 @@ function renderPickedMovie(instanceId, detail, item) {
       el(
         "div",
         {},
-        el(
-          "button",
-          { class: "small", onclick: () => runSelection(false, movie.media_id) },
-          "Search"
-        ),
+        actionButton("Search", "small", (b) => runSelection(false, movie.media_id, b)),
         " ",
-        el(
-          "button",
-          {
-            class: "small primary",
-            onclick: () => {
-              if (confirm(`Search and grab the best release for ${label}?`))
-                runSelection(true, movie.media_id);
-            },
-          },
-          "Grab"
-        )
+        actionButton("Grab", "small primary", (b) => {
+          if (confirm(`Search and grab the best release for ${label}?`))
+            runSelection(true, movie.media_id, b);
+        })
       )
     )
   );
@@ -1123,31 +1206,21 @@ function seasonRow(instanceId, seriesId, seriesLabel, s) {
     el(
       "td",
       {},
-      el(
-        "button",
-        {
-          class: "small",
-          title: "Search for a season pack",
-          onclick: () => {
-            pickSeason();
-            runSeasonSelection(false, seriesId, s.season_number);
-          },
+      actionButton(
+        "Search",
+        "small",
+        (b) => {
+          pickSeason();
+          runSeasonSelection(false, seriesId, s.season_number, b);
         },
-        "Search"
+        "Search for a season pack"
       ),
       " ",
-      el(
-        "button",
-        {
-          class: "small primary",
-          onclick: () => {
-            if (!confirm(`Search and grab the best pack for ${label} now?`)) return;
-            pickSeason();
-            runSeasonSelection(true, seriesId, s.season_number);
-          },
-        },
-        "Grab"
-      ),
+      actionButton("Grab", "small primary", (b) => {
+        if (!confirm(`Search and grab the best pack for ${label} now?`)) return;
+        pickSeason();
+        runSeasonSelection(true, seriesId, s.season_number, b);
+      }),
       expander
     )
   );
@@ -1187,30 +1260,16 @@ function renderSeasonEpisodes(container, instanceId, seriesId, seriesLabel, data
             el(
               "td",
               {},
-              el(
-                "button",
-                {
-                  class: "small",
-                  onclick: () => {
-                    pick();
-                    runSelection(false, ep.id);
-                  },
-                },
-                "Search"
-              ),
+              actionButton("Search", "small", (b) => {
+                pick();
+                runSelection(false, ep.id, b);
+              }),
               " ",
-              el(
-                "button",
-                {
-                  class: "small primary",
-                  onclick: () => {
-                    if (!confirm(`Search and grab the best release for ${label}?`)) return;
-                    pick();
-                    runSelection(true, ep.id);
-                  },
-                },
-                "Grab"
-              )
+              actionButton("Grab", "small primary", (b) => {
+                if (!confirm(`Search and grab the best release for ${label}?`)) return;
+                pick();
+                runSelection(true, ep.id, b);
+              })
             )
           );
         })
@@ -1248,7 +1307,7 @@ function renderPickedSeries(instanceId, detail, item) {
     );
     return;
   }
-  const wholeSeries = (grab) => {
+  const wholeSeries = (grab, button) => {
     const chosen = checkedSeasons();
     setPicked({
       kind: "series",
@@ -1257,7 +1316,7 @@ function renderPickedSeries(instanceId, detail, item) {
       seasons: chosen,
       label,
     });
-    runSeriesSelection(grab, series.media_id, chosen);
+    runSeriesSelection(grab, series.media_id, chosen, button);
   };
   container.replaceChildren(
     el(
@@ -1291,25 +1350,14 @@ function renderPickedSeries(instanceId, detail, item) {
       el(
         "div",
         {},
-        el(
-          "button",
-          { class: "small", onclick: () => wholeSeries(false) },
-          "Search selected seasons"
-        ),
+        actionButton("Search selected seasons", "small", (b) => wholeSeries(false, b)),
         " ",
-        el(
-          "button",
-          {
-            class: "small primary",
-            onclick: () => {
-              const chosen = checkedSeasons();
-              const what = chosen.length ? `season(s) ${chosen.join(", ")}` : "every season";
-              if (!confirm(`Search and grab ${what} of ${label}?`)) return;
-              wholeSeries(true);
-            },
-          },
-          "Grab selected seasons"
-        ),
+        actionButton("Grab selected seasons", "small primary", (b) => {
+          const chosen = checkedSeasons();
+          const what = chosen.length ? `season(s) ${chosen.join(", ")}` : "every season";
+          if (!confirm(`Search and grab ${what} of ${label}?`)) return;
+          wholeSeries(true, b);
+        }),
         el(
           "span",
           { class: "hint-inline" },
@@ -1322,65 +1370,26 @@ function renderPickedSeries(instanceId, detail, item) {
 
 /* Search (and optionally grab) a season pack. Called from a season row, so
    the series id and season number are always known. */
-async function runSeasonSelection(grab, seriesId, season) {
+function runSeasonSelection(grab, seriesId, season, button) {
   const instanceId = $("#select-instance").value;
   if (!instanceId) return toast("Configure an instance first", true);
   if (!seriesId || seriesId < 1) return toast("Pick a series first", true);
-  if (Number.isNaN(season) || season < 0) return toast("Pick a season first", true);
-  setResult(
-    "#select-status",
-    (grab ? "searching for a pack and grabbing…" : "searching for a pack…") +
-      SEARCH_WAIT_HINT,
-    true
+  if (!Number.isInteger(season) || season < 0) return toast("Pick a season first", true);
+  return runSearchPageJob(
+    grab,
+    { kind: "season", series_id: seriesId, season_number: season },
+    button
   );
-  $("#select-result").replaceChildren();
-  try {
-    const result = await api(
-      `/api/select/${encodeURIComponent(instanceId)}/season/${seriesId}/${season}`,
-      { method: "POST", body: JSON.stringify(selectionBody(grab)) }
-    );
-    state.lastResult = result;
-    /* The season pack's Grab buttons must use the season route, which
-       renderSelectionResult derives from the media it is given. */
-    selectTarget = { instanceId, mediaId: seriesId };
-    setResult("#select-status", `done in ${result.duration_ms} ms`, true);
-    renderSelectionResult(result, null, selectPageContext());
-    if (grab) loadHistory();
-  } catch (e) {
-    setResult("#select-status", e.message, false);
-    toast(e.message, true);
-  }
 }
 
 /* Search (and optionally grab) a whole series, or just the ticked seasons. */
-async function runSeriesSelection(grab, seriesId, seasons) {
+function runSeriesSelection(grab, seriesId, seasons, button) {
   const instanceId = $("#select-instance").value;
   if (!instanceId) return toast("Configure an instance first", true);
   if (!seriesId || seriesId < 1) return toast("Pick a series first", true);
-  const body = selectionBody(grab);
-  if (seasons && seasons.length) body.seasons = seasons;
-  setResult(
-    "#select-status",
-    (grab
-      ? "searching the whole series and grabbing…"
-      : "searching the whole series…") + SEARCH_WAIT_HINT,
-    true
-  );
-  $("#select-result").replaceChildren();
-  try {
-    const result = await api(`/api/select/${encodeURIComponent(instanceId)}/series/${seriesId}`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
-    state.lastResult = result;
-    selectTarget = { instanceId, mediaId: seriesId };
-    const s = result.summary || {};
-    setResult("#select-status", `${s.seasons || 0} season(s), ${s.grabbed || 0} grabbed`, true);
-    renderSeriesResult(result, null, selectPageContext());
-  } catch (e) {
-    setResult("#select-status", e.message, false);
-    toast(e.message, true);
-  }
+  const target = { kind: "series", series_id: seriesId };
+  if (seasons && seasons.length) target.seasons = seasons;
+  return runSearchPageJob(grab, target, button);
 }
 
 function renderSeriesResult(result, target, ctx) {
@@ -1448,15 +1457,15 @@ function selectionLabel(selection) {
 
 /* The page's Search / Grab buttons act on whatever was picked last: a movie,
    an episode, a season pack, or the series. */
-function runCurrentSelection(grab) {
+function runCurrentSelection(grab, button) {
   if (!picked) return toast("Search your library and pick an item first", true);
   switch (picked.kind) {
     case "season":
-      return runSeasonSelection(grab, picked.seriesId, picked.seasonNumber);
+      return runSeasonSelection(grab, picked.seriesId, picked.seasonNumber, button);
     case "series":
-      return runSeriesSelection(grab, picked.seriesId, checkedSeasons());
+      return runSeriesSelection(grab, picked.seriesId, checkedSeasons(), button);
     default:
-      return runSelection(grab, picked.mediaId);
+      return runSelection(grab, picked.mediaId, button);
   }
 }
 
@@ -1511,26 +1520,14 @@ async function loadWanted() {
                           el(
                             "div",
                             {},
-                            el(
-                              "button",
-                              {
-                                class: "small",
-                                onclick: () => runSelection(false, item.media_id),
-                              },
-                              "Search"
+                            actionButton("Search", "small", (b) =>
+                              runSelection(false, item.media_id, b)
                             ),
                             " ",
-                            el(
-                              "button",
-                              {
-                                class: "small primary",
-                                onclick: () => {
-                                  if (confirm(`Search and grab the best release for ${item.label}?`))
-                                    runSelection(true, item.media_id);
-                                },
-                              },
-                              "Grab"
-                            )
+                            actionButton("Grab", "small primary", (b) => {
+                              if (confirm(`Search and grab the best release for ${item.label}?`))
+                                runSelection(true, item.media_id, b);
+                            })
                           )
                         )
                       );
@@ -2002,6 +1999,7 @@ async function loadConfig() {
   buildForm($("#automatic-form"), automaticSchema, state.config.automatic);
   buildForm($("#seasons-form"), seasonsSchema, seasonsToForm(state.config.seasons));
   buildForm($("#network-form"), networkSchema, state.config.network);
+  buildForm($("#queue-form"), queueSchema, queueSettings());
   renderInstancesEditor();
   renderInstanceOptions();
   renderDashboardInstances();
@@ -2018,10 +2016,1029 @@ async function loadAutomatic() {
 }
 
 /* ------------------------------------------------------------------ */
+/* jobs: every Search / Grab / pass runs as a job in the server queue  */
+/* ------------------------------------------------------------------ */
+
+/* How often an open status line asks about its job, and how often the
+   badge, the Queue tab and a followed Events tab refresh. */
+const JOB_POLL_MS = 1000;
+const BADGE_POLL_MS = 3000;
+const QUEUE_POLL_MS = 2000;
+const EVENTS_POLL_MS = 2000;
+const EVENTS_MAX_ROWS = 1000;
+
+const FINISHED_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
+
+const JOB_KINDS = {
+  search: { icon: "\u{1F50D}", label: "Search" },
+  grab_best: { icon: "\u2B07", label: "Grab" },
+  grab_release: { icon: "\u2B07", label: "Grab release" },
+  seerr_select: { icon: "\u2709", label: "Seerr request" },
+  automatic_pass: { icon: "\u27F3", label: "Automatic pass" },
+  seerr_pass: { icon: "\u27F3", label: "Seerr pass" },
+  seerr_webhook: { icon: "\u26A1", label: "Seerr webhook" },
+};
+
+function jobKindLabel(kind) {
+  const k = JOB_KINDS[kind];
+  return k ? `${k.icon} ${k.label}` : kind || "job";
+}
+
+/* "queued · position 2", "running", "failed"... */
+function jobStatusText(job) {
+  if (job.status === "queued" && job.position) return `queued · #${job.position} in line`;
+  return job.status || "?";
+}
+
+function jobStatusPill(job) {
+  return el("span", { class: `pill pill-${job.status || "unknown"}` }, jobStatusText(job));
+}
+
+/* Running jobs have no duration yet; show how long they have been at it. */
+function jobDuration(job) {
+  if (job.duration_ms !== null && job.duration_ms !== undefined) return fmtDuration(job.duration_ms);
+  if (job.status === "running" && job.started_at) {
+    const started = new Date(job.started_at).getTime();
+    if (!Number.isNaN(started)) return fmtDuration(Math.max(0, Date.now() - started)) + "…";
+  }
+  return "—";
+}
+
+async function enqueueJob(kind, params) {
+  const response = await api("/api/jobs", {
+    method: "POST",
+    body: JSON.stringify({ kind, params, source: "ui" }),
+  });
+  return response.job;
+}
+
+function toastJob(job, verb) {
+  toast(`${verb || "Queued"} #${job.id} · ${job.label || jobKindLabel(job.kind)}`, false, {
+    label: "View queue",
+    onclick: () => showTab("queue"),
+  });
+}
+
+/* --- watching single jobs ----------------------------------------- */
+
+/* job id -> [{onUpdate, onFinish}], polled every JOB_POLL_MS while any
+   status line is waiting. */
+const jobWatchers = new Map();
+let jobWatchTimer = null;
+let jobWatchBusy = false;
+
+function watchJob(id, handlers) {
+  if (!jobWatchers.has(id)) jobWatchers.set(id, []);
+  jobWatchers.get(id).push(handlers);
+  scheduleJobWatch();
+}
+
+function scheduleJobWatch() {
+  if (jobWatchTimer !== null || jobWatchers.size === 0) return;
+  jobWatchTimer = setTimeout(() => {
+    jobWatchTimer = null;
+    tickJobWatchers().finally(scheduleJobWatch);
+  }, JOB_POLL_MS);
+}
+
+function callSafely(fn, arg) {
+  if (!fn) return;
+  try {
+    fn(arg);
+  } catch (e) {
+    /* A rendering bug must not stop the other watchers, and must not be
+       silent either. */
+    console.error(e);
+    toast("UI error: " + e.message, true);
+  }
+}
+
+/* One round of polling: every watched job is fetched once; finished jobs
+   are handed to their onFinish and forgotten. Exported for the tests, which
+   cannot rely on timers. */
+async function tickJobWatchers() {
+  if (jobWatchBusy) return;
+  jobWatchBusy = true;
+  try {
+    for (const id of Array.from(jobWatchers.keys())) {
+      let job;
+      try {
+        job = (await api(`/api/jobs/${id}`)).job;
+      } catch (e) {
+        if (e.status !== 404) continue; // a network blip: ask again next round
+        job = { id, status: "failed", error: "the job no longer exists (cleared?)" };
+      }
+      const handlers = jobWatchers.get(id) || [];
+      if (FINISHED_STATUSES.has(job.status)) {
+        jobWatchers.delete(id);
+        for (const h of handlers) callSafely(h.onFinish, job);
+      } else {
+        for (const h of handlers) callSafely(h.onUpdate, job);
+      }
+    }
+  } finally {
+    jobWatchBusy = false;
+  }
+}
+
+/* --- the inline status line of the panel that started a job ---------- */
+
+function setButtonBusy(button, text) {
+  if (!button) return;
+  if (button._idleLabel === undefined) button._idleLabel = button.textContent;
+  button.disabled = true;
+  button.textContent = text;
+}
+
+function setButtonIdle(button) {
+  if (!button || button._idleLabel === undefined) return;
+  button.disabled = false;
+  button.textContent = button._idleLabel;
+  button._idleLabel = undefined;
+}
+
+/* Write a job's state into [node] (a span.result): "#12 queued (position
+   2)…", "#12 running: searching Radarr…", "#12 done in 4.2 s", or the error
+   with a Retry button. Falls back to opts.setStatus when there is no node. */
+function renderJobLine(node, job, opts) {
+  const o = opts || {};
+  let text;
+  let ok = true;
+  switch (job.status) {
+    case "queued":
+      text = `#${job.id} queued${job.position ? ` (position ${job.position})` : ""}…`;
+      break;
+    case "running":
+      text = job.progress ? `#${job.id} ${job.progress}` : `#${job.id} running…${o.waitHint || ""}`;
+      break;
+    case "succeeded":
+      text =
+        o.describeDone && job.result
+          ? `#${job.id} ${o.describeDone(job.result, job)}`
+          : `#${job.id} done in ${fmtDuration(job.duration_ms)}`;
+      if (o.isSuccess && job.result) ok = o.isSuccess(job.result, job);
+      break;
+    case "cancelled":
+      text = `#${job.id} cancelled`;
+      ok = false;
+      break;
+    default:
+      text = `#${job.id} failed: ${job.error || "unknown error"}`;
+      ok = false;
+  }
+  if (!node) {
+    if (o.setStatus) o.setStatus(text, ok);
+    return;
+  }
+  const parts = [el("span", {}, text)];
+  parts.push(
+    el("button", { class: "small linklike", onclick: () => openJobDrawer(job.id) }, "view")
+  );
+  if ((job.status === "failed" || job.status === "cancelled") && o.retry)
+    parts.push(actionButton("Retry", "small", (b) => o.retry(job, b)));
+  node.className = "result" + (ok ? " ok" : " bad");
+  node.replaceChildren(...parts);
+}
+
+/* uiJobKeys: kind+params -> job id while this page waits for that job, so a
+   double click does not queue the same thing twice (the server dedupes
+   too, this just avoids the round trip). 0 = the POST is in flight. */
+const uiJobKeys = new Map();
+
+function jobKey(kind, params) {
+  return kind + ":" + JSON.stringify(params);
+}
+
+/* Queue a job and follow it from the panel that asked for it.
+   opts: {button, statusNode, setStatus, waitHint, describeDone, isSuccess,
+          onStart(job), isCurrent(job), onResult(result, job)}
+   isCurrent lets a panel ignore a job it has since replaced (an older
+   search finishing after a newer one was started). */
+async function runJob(kind, params, opts) {
+  const o = opts || {};
+  const key = jobKey(kind, params);
+  if (uiJobKeys.has(key)) {
+    const id = uiJobKeys.get(key);
+    toast(id ? `Already queued as #${id}` : "Already queueing…", false, {
+      label: "View queue",
+      onclick: () => showTab("queue"),
+    });
+    return null;
+  }
+  uiJobKeys.set(key, 0);
+  setButtonBusy(o.button, "queueing…");
+  let job;
+  try {
+    job = await enqueueJob(kind, params);
+  } catch (e) {
+    uiJobKeys.delete(key);
+    setButtonIdle(o.button);
+    const message = describeApiError(e);
+    if (o.statusNode) {
+      o.statusNode.className = "result bad";
+      o.statusNode.replaceChildren(el("span", {}, `not queued: ${message}`));
+    } else if (o.setStatus) o.setStatus(`not queued: ${message}`, false);
+    toast(message, true);
+    return null;
+  }
+  toastJob(job);
+  followJob(job, o, key);
+  pollQueueBadge();
+  return job;
+}
+
+/* Everything after the job exists: shared by runJob and the inline Retry. */
+function followJob(job, o, key) {
+  if (key) uiJobKeys.set(key, job.id);
+  if (o.onStart) callSafely(o.onStart, job);
+  const current = (j) => !o.isCurrent || o.isCurrent(j);
+  const lineOpts = Object.assign({}, o, {
+    retry: async (failed, button) => {
+      setButtonBusy(button, "queueing…");
+      try {
+        const response = await api(`/api/jobs/${failed.id}/retry`, { method: "POST" });
+        toastJob(response.job, "Retrying as");
+        followJob(response.job, o, jobKey(response.job.kind, response.job.params || {}));
+        pollQueueBadge();
+      } catch (e) {
+        setButtonIdle(button);
+        toast(describeApiError(e), true);
+      }
+    },
+  });
+  const update = (j) => {
+    setButtonBusy(o.button, j.status === "running" ? "running…" : "queued…");
+    if (current(j)) renderJobLine(o.statusNode, j, lineOpts);
+  };
+  const finish = (j) => {
+    if (key && uiJobKeys.get(key) === j.id) uiJobKeys.delete(key);
+    setButtonIdle(o.button);
+    if (!current(j)) return;
+    renderJobLine(o.statusNode, j, lineOpts);
+    if (j.status === "succeeded" && o.onResult) o.onResult(j.result || {}, j);
+    if (j.status !== "succeeded") toast(`#${j.id} ${j.status}: ${j.error || j.label || ""}`, true);
+  };
+  if (FINISHED_STATUSES.has(job.status)) {
+    finish(job);
+    return;
+  }
+  update(job);
+  watchJob(job.id, { onUpdate: update, onFinish: finish });
+}
+
+/* --- queue badge (visible from every tab) --------------------------- */
+
+function renderQueueBadge(counts) {
+  const badge = $("#queue-badge");
+  if (!badge) return;
+  const c = counts || {};
+  const running = c.running || 0;
+  const queued = c.queued || 0;
+  const parts = [];
+  if (running) parts.push(`${running} running`);
+  if (queued) parts.push(`${queued} queued`);
+  badge.textContent = parts.join(" · ");
+  badge.hidden = parts.length === 0;
+  badge.className = "nav-badge" + (running ? " busy" : "");
+}
+
+async function pollQueueBadge() {
+  try {
+    const data = await api("/api/jobs?status=queued,running&limit=100");
+    const counts = Object.assign({}, data.counts || {});
+    /* Count from the list too, in case counts only cover some statuses. */
+    const jobs = data.jobs || [];
+    if (counts.running === undefined) counts.running = jobs.filter((j) => j.status === "running").length;
+    if (counts.queued === undefined) counts.queued = jobs.filter((j) => j.status === "queued").length;
+    state.queueCounts = Object.assign({}, state.queueCounts || {}, {
+      running: counts.running,
+      queued: counts.queued,
+    });
+    renderQueueBadge(state.queueCounts);
+  } catch (_) {
+    /* the badge is best effort */
+  }
+}
+
+/* --- Queue tab ------------------------------------------------------- */
+
+const QUEUE_FILTERS = [
+  { key: "all", label: "All", statuses: null },
+  { key: "active", label: "Active", statuses: "queued,running" },
+  { key: "succeeded", label: "Succeeded", statuses: "succeeded" },
+  { key: "failed", label: "Failed", statuses: "failed,cancelled" },
+];
+
+const queueView = { filter: "all", jobs: [], counts: {} };
+
+function queueFilterCount(key, counts) {
+  const c = counts || {};
+  switch (key) {
+    case "all":
+      return ["queued", "running", "succeeded", "failed", "cancelled"].reduce(
+        (sum, k) => sum + (c[k] || 0),
+        0
+      );
+    case "active":
+      return (c.queued || 0) + (c.running || 0);
+    case "succeeded":
+      return c.succeeded || 0;
+    case "failed":
+      return (c.failed || 0) + (c.cancelled || 0);
+    default:
+      return 0;
+  }
+}
+
+function renderQueueFilters() {
+  const container = $("#queue-filters");
+  if (!container) return;
+  container.replaceChildren(
+    ...QUEUE_FILTERS.map((f) =>
+      el(
+        "button",
+        {
+          class: "chip" + (queueView.filter === f.key ? " active" : ""),
+          onclick: () => setQueueFilter(f.key),
+        },
+        `${f.label} (${queueFilterCount(f.key, queueView.counts)})`
+      )
+    )
+  );
+}
+
+function setQueueFilter(key) {
+  queueView.filter = key;
+  renderQueueFilters();
+  return loadQueue();
+}
+
+async function loadQueue() {
+  const filter = QUEUE_FILTERS.find((f) => f.key === queueView.filter) || QUEUE_FILTERS[0];
+  const path =
+    "/api/jobs?limit=200" + (filter.statuses ? `&status=${encodeURIComponent(filter.statuses)}` : "");
+  try {
+    const data = await api(path);
+    queueView.jobs = (data.jobs || []).slice().sort((a, b) => b.id - a.id);
+    queueView.counts = data.counts || {};
+    if (filter.key === "all" || filter.key === "active") {
+      state.queueCounts = Object.assign({}, state.queueCounts || {}, queueView.counts);
+      renderQueueBadge(state.queueCounts);
+    }
+    renderQueueFilters();
+    renderQueue();
+  } catch (e) {
+    const list = $("#queue-list");
+    if (list) list.replaceChildren(el("p", { class: "result bad" }, describeApiError(e)));
+  }
+}
+
+async function cancelJob(id, button) {
+  setButtonBusy(button, "cancelling…");
+  try {
+    const response = await api(`/api/jobs/${id}/cancel`, { method: "POST" });
+    toast(`#${id} ${response.job ? response.job.status : "cancelled"}`);
+  } catch (e) {
+    toast(describeApiError(e), true);
+  } finally {
+    setButtonIdle(button);
+    if (drawerJobId === id) openJobDrawer(id);
+    loadQueue();
+    pollQueueBadge();
+  }
+}
+
+async function retryJob(id, button) {
+  setButtonBusy(button, "queueing…");
+  try {
+    const response = await api(`/api/jobs/${id}/retry`, { method: "POST" });
+    toastJob(response.job, "Retrying as");
+    /* The drawer follows the retry rather than the job that failed. */
+    if (drawerJobId === id) openJobDrawer(response.job.id);
+  } catch (e) {
+    toast(describeApiError(e), true);
+  } finally {
+    setButtonIdle(button);
+    loadQueue();
+    pollQueueBadge();
+  }
+}
+
+async function clearFinishedJobs() {
+  setResult("#queue-result", "clearing…", true);
+  try {
+    const response = await api("/api/jobs?status=finished", { method: "DELETE" });
+    setResult("#queue-result", `cleared ${response.cleared} finished job(s)`, true);
+  } catch (e) {
+    setResult("#queue-result", describeApiError(e), false);
+  }
+  loadQueue();
+}
+
+function jobActions(job) {
+  const actions = [actionButton("View", "small", () => openJobDrawer(job.id))];
+  if (job.status === "queued" || job.status === "running")
+    actions.push(actionButton("Cancel", "small danger", (b) => cancelJob(job.id, b)));
+  if (job.status === "failed" || job.status === "cancelled")
+    actions.push(actionButton("Retry", "small", (b) => retryJob(job.id, b)));
+  return actions;
+}
+
+function queueRow(job) {
+  return el(
+    "tr",
+    { class: `job-row job-${job.status}` },
+    el("td", {}, `#${job.id}`),
+    el("td", {}, jobStatusPill(job)),
+    el("td", { class: "nowrap" }, jobKindLabel(job.kind)),
+    el(
+      "td",
+      {},
+      job.label || "—",
+      job.retry_of ? el("div", { class: "hint" }, `retry of #${job.retry_of}`) : null
+    ),
+    el("td", {}, num(job.source, "—")),
+    el("td", {}, num(job.instance_id, "—")),
+    el("td", { class: "nowrap" }, fmtTime(job.created_at)),
+    el("td", { class: "nowrap" }, fmtTime(job.started_at)),
+    el("td", { class: "nowrap" }, jobDuration(job)),
+    el(
+      "td",
+      {},
+      job.status === "failed" || job.status === "cancelled"
+        ? el("span", { class: "job-error" }, job.error || job.status)
+        : num(job.progress, "")
+    ),
+    el("td", { class: "nowrap" }, ...jobActions(job))
+  );
+}
+
+function renderQueue() {
+  const container = $("#queue-list");
+  if (!container) return;
+  const jobs = queueView.jobs;
+  if (!jobs.length) {
+    container.replaceChildren(
+      el(
+        "p",
+        { class: "hint" },
+        queueView.filter === "all"
+          ? "The queue is empty. Search or Grab something and it shows up here."
+          : "No job matches this filter."
+      )
+    );
+    return;
+  }
+  container.replaceChildren(
+    el(
+      "table",
+      { class: "queue-table" },
+      el(
+        "thead",
+        {},
+        el(
+          "tr",
+          {},
+          [
+            "#",
+            "Status",
+            "Kind",
+            "Job",
+            "Source",
+            "Instance",
+            "Created",
+            "Started",
+            "Duration",
+            "Progress / error",
+            "",
+          ].map((h) => el("th", {}, h))
+        )
+      ),
+      el("tbody", {}, ...jobs.map(queueRow))
+    )
+  );
+}
+
+/* --- the job drawer -------------------------------------------------- */
+
+let drawerJobId = null;
+
+function closeJobDrawer() {
+  drawerJobId = null;
+  const drawer = $("#job-drawer");
+  if (drawer) drawer.hidden = true;
+}
+
+async function openJobDrawer(id) {
+  const drawer = $("#job-drawer");
+  if (!drawer) return;
+  drawerJobId = id;
+  drawer.hidden = false;
+  $("#job-drawer-title").textContent = `Job #${id}`;
+  $("#job-drawer-meta").replaceChildren(el("p", { class: "hint" }, "Loading…"));
+  $("#job-drawer-body").replaceChildren();
+  setResult("#job-drawer-status", "", true);
+  try {
+    const response = await api(`/api/jobs/${id}`);
+    if (drawerJobId !== id) return;
+    renderJobDrawer(response.job);
+    if (!FINISHED_STATUSES.has(response.job.status)) {
+      const redraw = (job) => {
+        if (drawerJobId === job.id) renderJobDrawer(job);
+      };
+      watchJob(id, { onUpdate: redraw, onFinish: redraw });
+    }
+  } catch (e) {
+    $("#job-drawer-meta").replaceChildren(el("p", { class: "result bad" }, describeApiError(e)));
+  }
+}
+
+function renderJobDrawer(job) {
+  $("#job-drawer-title").textContent = `Job #${job.id} · ${job.label || jobKindLabel(job.kind)}`;
+  const rows = [
+    ["Status", jobStatusText(job)],
+    ["Kind", jobKindLabel(job.kind)],
+    ["Source", num(job.source)],
+    ["Instance", num(job.instance_id)],
+    ["Created", fmtTime(job.created_at)],
+    ["Started", fmtTime(job.started_at)],
+    ["Finished", fmtTime(job.finished_at)],
+    ["Duration", jobDuration(job)],
+    ["Attempt", num(job.attempt, 1)],
+  ];
+  if (job.retry_of) rows.push(["Retry of", `#${job.retry_of}`]);
+  $("#job-drawer-meta").replaceChildren(
+    el(
+      "div",
+      { class: "cards" },
+      ...rows.map(([k, v]) =>
+        el("div", { class: "card" }, el("div", { class: "k" }, k), el("div", { class: "v" }, String(v)))
+      )
+    ),
+    job.progress && !FINISHED_STATUSES.has(job.status)
+      ? el("p", { class: "hint" }, job.progress)
+      : null,
+    job.error ? el("div", { class: "conflicts" }, job.error) : null,
+    el("p", {}, ...jobActions(job).slice(1)),
+    el(
+      "details",
+      {},
+      el("summary", {}, "Parameters"),
+      el("pre", {}, JSON.stringify(job.params || {}, null, 2))
+    )
+  );
+  renderJobResult(job, $("#job-drawer-body"));
+}
+
+/* Draw a finished job's result with the renderers the originating page
+   uses, so the drawer has the same ranking, links and Grab buttons. */
+function renderJobResult(job, box) {
+  if (!box) return;
+  const result = job.result;
+  if (!result) {
+    box.replaceChildren(
+      el(
+        "p",
+        { class: "hint" },
+        FINISHED_STATUSES.has(job.status) ? "No result." : "The result appears here when the job finishes."
+      )
+    );
+    return;
+  }
+  const params = job.params || {};
+  const ctx = {
+    instanceId: job.instance_id || params.instance_id || result.instance_id,
+    statusNode: $("#job-drawer-status"),
+    setStatus: (m, ok) => setResult("#job-drawer-status", m, ok),
+  };
+  const content = el("div", {});
+  try {
+    switch (job.kind) {
+      case "search":
+      case "grab_best":
+      case "grab_release":
+        if (result.candidates) renderSelectionResult(result, content, ctx);
+        else if (result.series && result.seasons) renderSeriesResult(result, content, ctx);
+        else content.appendChild(el("pre", {}, JSON.stringify(result, null, 2)));
+        break;
+      case "seerr_select":
+        renderSeerrPayload(result, content, ctx);
+        break;
+      case "automatic_pass":
+        content.appendChild(el("p", { class: "hint" }, automaticSummaryText(result)));
+        content.appendChild(renderAutomaticResults(result.results || [], el("div", {})));
+        break;
+      case "seerr_pass":
+        content.appendChild(el("p", { class: "hint" }, seerrPassSummaryText(result)));
+        content.appendChild(renderSeerrResults(result.results || [], el("div", {})));
+        break;
+      default:
+        content.appendChild(el("pre", {}, JSON.stringify(result, null, 2)));
+    }
+  } catch (e) {
+    content.replaceChildren(el("p", { class: "result bad" }, "Could not draw this result: " + e.message));
+  }
+  box.replaceChildren(
+    content,
+    el("details", {}, el("summary", {}, "Raw result"), el("pre", {}, JSON.stringify(result, null, 2)))
+  );
+}
+
+function automaticSummaryText(summary) {
+  return `${num(summary.instances, 0)} instance(s) in ${fmtDuration(summary.duration_ms)}${
+    summary.dry_run ? " (dry run)" : ""
+  }`;
+}
+
+function seerrPassSummaryText(summary) {
+  return `${num(summary.approved, 0)} approved, ${num(summary.fulfilled, 0)} ${
+    summary.dry_run ? "searched (dry run)" : "auto-grabbed"
+  } in ${fmtDuration(summary.duration_ms)}`;
+}
+
+/* --- Events tab ------------------------------------------------------ */
+
+const EVENT_TYPE_CHIPS = ["job", "search", "grab", "seerr", "automatic", "webhook", "auth", "config", "log"];
+
+const eventsView = {
+  events: [], // newest first
+  lastId: 0,
+  type: "",
+  paused: false,
+  pending: [], // newest first, held back while paused
+  loaded: false,
+};
+
+function eventFilterQuery() {
+  const parts = [];
+  const level = ($("#events-level") && $("#events-level").value) || "info";
+  if (level && level !== "info") parts.push(`level=${encodeURIComponent(level)}`);
+  if (eventsView.type) parts.push(`type=${encodeURIComponent(eventsView.type)}`);
+  const q = (($("#events-q") && $("#events-q").value) || "").trim();
+  if (q) parts.push(`q=${encodeURIComponent(q)}`);
+  return parts;
+}
+
+function renderEventTypeChips() {
+  const container = $("#events-types");
+  if (!container) return;
+  container.replaceChildren(
+    el(
+      "button",
+      { class: "chip" + (eventsView.type ? "" : " active"), onclick: () => setEventType("") },
+      "all"
+    ),
+    ...EVENT_TYPE_CHIPS.map((t) =>
+      el(
+        "button",
+        {
+          class: "chip" + (eventsView.type === t ? " active" : ""),
+          onclick: () => setEventType(eventsView.type === t ? "" : t),
+        },
+        t
+      )
+    )
+  );
+}
+
+function setEventType(type) {
+  eventsView.type = type;
+  renderEventTypeChips();
+  return loadEvents();
+}
+
+/* A full load with the current filters: the newest 200 matching events. */
+async function loadEvents() {
+  const query = ["limit=200", ...eventFilterQuery()].join("&");
+  try {
+    const data = await api(`/api/events?${query}`);
+    const events = (data.events || []).slice().reverse();
+    eventsView.events = events.slice(0, EVENTS_MAX_ROWS);
+    eventsView.pending = [];
+    eventsView.lastId = Math.max(data.last_id || 0, events.length ? events[0].id : 0);
+    eventsView.loaded = true;
+    renderEvents();
+  } catch (e) {
+    const list = $("#events-list");
+    if (list) list.replaceChildren(el("p", { class: "result bad" }, describeApiError(e)));
+  }
+}
+
+/* Follow: only what is newer than the last event seen. */
+async function pollEvents() {
+  const follow = $("#events-follow");
+  if (follow && follow.checked === false) return;
+  if (!eventsView.loaded) return loadEvents();
+  const limit = 500;
+  const query = [`since_id=${eventsView.lastId}`, `limit=${limit}`, ...eventFilterQuery()].join("&");
+  try {
+    const data = await api(`/api/events?${query}`);
+    const batch = data.events || [];
+    const fresh = batch.filter((e) => e.id > eventsView.lastId).reverse();
+    const newest = fresh.length ? fresh[0].id : 0;
+    /* A full batch means more is waiting: continue from what arrived. Otherwise
+       jump to the latest id overall, so filtered-out events are not asked for
+       again. */
+    eventsView.lastId =
+      batch.length >= limit
+        ? Math.max(eventsView.lastId, newest)
+        : Math.max(eventsView.lastId, data.last_id || 0, newest);
+    if (!fresh.length) return;
+    if (eventsView.paused) {
+      eventsView.pending = fresh.concat(eventsView.pending).slice(0, EVENTS_MAX_ROWS);
+      renderEventsSummary();
+      return;
+    }
+    eventsView.events = fresh.concat(eventsView.events).slice(0, EVENTS_MAX_ROWS);
+    renderEvents();
+  } catch (_) {
+    /* try again on the next tick */
+  }
+}
+
+function toggleEventsPause() {
+  eventsView.paused = !eventsView.paused;
+  if (!eventsView.paused && eventsView.pending.length) {
+    eventsView.events = eventsView.pending.concat(eventsView.events).slice(0, EVENTS_MAX_ROWS);
+    eventsView.pending = [];
+    renderEvents();
+  } else renderEventsSummary();
+}
+
+function renderEventsSummary() {
+  const pause = $("#events-pause");
+  if (pause)
+    pause.textContent = eventsView.paused
+      ? `Resume${eventsView.pending.length ? ` (${eventsView.pending.length} new)` : ""}`
+      : "Pause";
+  const follow = $("#events-follow");
+  const summary = $("#events-summary");
+  if (summary)
+    summary.textContent =
+      `${eventsView.events.length} event(s)` +
+      (eventsView.paused ? " · paused" : follow && follow.checked === false ? "" : " · following");
+}
+
+function levelBadge(level) {
+  const cls = level === "error" ? "badge bad" : level === "warn" ? "badge warn" : "badge";
+  return el("span", { class: cls }, level || "info");
+}
+
+function eventRow(e, compact) {
+  const jobLink =
+    e.job_id !== null && e.job_id !== undefined
+      ? el("button", { class: "small linklike", onclick: () => openJobDrawer(e.job_id) }, `#${e.job_id}`)
+      : "";
+  if (compact)
+    return el(
+      "tr",
+      { class: `event-row event-${e.level || "info"}` },
+      el("td", { class: "nowrap" }, fmtTime(e.ts)),
+      el("td", {}, levelBadge(e.level)),
+      el("td", {}, e.message || e.type),
+      el("td", {}, jobLink)
+    );
+  return el(
+    "tr",
+    { class: `event-row event-${e.level || "info"}` },
+    el("td", { class: "nowrap" }, fmtTime(e.ts)),
+    el("td", {}, levelBadge(e.level)),
+    el("td", { class: "nowrap" }, e.type || ""),
+    el("td", {}, e.message || ""),
+    el("td", {}, num(e.media, "")),
+    el("td", {}, num(e.instance_id, "")),
+    el("td", {}, jobLink)
+  );
+}
+
+function renderEvents() {
+  renderEventsSummary();
+  const container = $("#events-list");
+  if (!container) return;
+  if (!eventsView.events.length) {
+    container.replaceChildren(el("p", { class: "hint" }, "No event matches these filters yet."));
+    return;
+  }
+  container.replaceChildren(
+    el(
+      "table",
+      { class: "events-table" },
+      el(
+        "thead",
+        {},
+        el(
+          "tr",
+          {},
+          ["Time", "Level", "Type", "Message", "Media", "Instance", "Job"].map((h) => el("th", {}, h))
+        )
+      ),
+      el("tbody", {}, ...eventsView.events.slice(0, EVENTS_MAX_ROWS).map((e) => eventRow(e, false)))
+    )
+  );
+}
+
+/* --- dashboard: queue counts and recent activity --------------------- */
+
+async function loadDashboardQueue() {
+  const container = $("#dashboard-queue");
+  if (!container) return;
+  try {
+    const data = await api("/api/jobs?limit=5");
+    const c = data.counts || {};
+    state.queueCounts = Object.assign({}, state.queueCounts || {}, c);
+    renderQueueBadge(state.queueCounts);
+    const cards = [
+      ["Running", num(c.running, 0)],
+      ["Queued", num(c.queued, 0)],
+      ["Succeeded", num(c.succeeded, 0)],
+      ["Failed", num(c.failed, 0)],
+      ["Cancelled", num(c.cancelled, 0)],
+    ];
+    const jobs = data.jobs || [];
+    container.replaceChildren(
+      el(
+        "div",
+        { class: "cards" },
+        ...cards.map(([k, v]) =>
+          el("div", { class: "card" }, el("div", { class: "k" }, k), el("div", { class: "v" }, String(v)))
+        )
+      ),
+      jobs.length
+        ? el(
+            "table",
+            { class: "queue-table compact" },
+            el(
+              "tbody",
+              {},
+              ...jobs.map((job) =>
+                el(
+                  "tr",
+                  { class: `job-row job-${job.status}` },
+                  el("td", {}, `#${job.id}`),
+                  el("td", {}, jobStatusPill(job)),
+                  el("td", {}, job.label || jobKindLabel(job.kind)),
+                  el("td", { class: "nowrap" }, jobDuration(job)),
+                  el("td", {}, actionButton("View", "small", () => openJobDrawer(job.id)))
+                )
+              )
+            )
+          )
+        : null,
+      el("p", {}, el("button", { class: "small", onclick: () => showTab("queue") }, "Open queue"))
+    );
+  } catch (e) {
+    container.replaceChildren(el("p", { class: "result bad" }, describeApiError(e)));
+  }
+}
+
+async function loadDashboardActivity() {
+  const container = $("#dashboard-activity");
+  if (!container) return;
+  try {
+    const data = await api("/api/events?limit=10");
+    const events = (data.events || []).slice().reverse();
+    if (!events.length) {
+      container.replaceChildren(el("p", { class: "hint" }, "Nothing has happened yet."));
+      return;
+    }
+    container.replaceChildren(
+      el("table", { class: "events-table compact" }, el("tbody", {}, ...events.map((e) => eventRow(e, true)))),
+      el("p", {}, el("button", { class: "small", onclick: () => showTab("events") }, "All events"))
+    );
+  } catch (e) {
+    container.replaceChildren(el("p", { class: "result bad" }, describeApiError(e)));
+  }
+}
+
+/* --- queue settings -------------------------------------------------- */
+
+const queueSchema = [
+  {
+    key: "workers",
+    label: "Jobs running at once",
+    type: "int",
+    min: 1,
+    max: 8,
+    hint: "1–8, default 2",
+  },
+  {
+    key: "per_instance",
+    label: "Jobs at once per Sonarr/Radarr instance",
+    type: "int",
+    min: 1,
+    max: 4,
+    hint: "1–4, default 1; searches hit every indexer, so keep this low",
+  },
+  {
+    key: "keep_finished",
+    label: "Finished jobs to keep",
+    type: "int",
+    min: 50,
+    max: 5000,
+    hint: "50–5000, default 500; older ones are dropped",
+  },
+];
+
+function queueSettings() {
+  return Object.assign(
+    { workers: 2, per_instance: 1, keep_finished: 500 },
+    (state.config && state.config.queue) || {}
+  );
+}
+
+function queueSettingsFromForm() {
+  const v = readForm($("#queue-form"), queueSchema);
+  const clamp = (x, lo, hi, d) => (Number.isFinite(x) ? Math.min(hi, Math.max(lo, x)) : d);
+  return {
+    workers: clamp(v.workers, 1, 8, 2),
+    per_instance: clamp(v.per_instance, 1, 4, 1),
+    keep_finished: clamp(v.keep_finished, 50, 5000, 500),
+  };
+}
+
+/* --- background polling ---------------------------------------------- */
+
+const pollLoops = {};
+
+/* A setTimeout chain (not setInterval) so a slow answer never stacks up
+   requests, and hidden browser tabs skip the work. */
+function startLoop(name, ms, fn) {
+  if (pollLoops[name]) return;
+  pollLoops[name] = true;
+  const tick = () => {
+    const visible = typeof document.hidden === "undefined" || !document.hidden;
+    Promise.resolve()
+      .then(() => (visible ? fn() : null))
+      .catch(() => {})
+      .finally(() => setTimeout(tick, ms));
+  };
+  setTimeout(tick, ms);
+}
+
+function startBackgroundPolling() {
+  pollQueueBadge();
+  startLoop("badge", BADGE_POLL_MS, async () => {
+    await pollQueueBadge();
+    if (state.activeTab === "dashboard")
+      await Promise.all([loadDashboardQueue(), loadDashboardActivity()]);
+  });
+  startLoop("queue", QUEUE_POLL_MS, async () => {
+    if (state.activeTab === "queue") await loadQueue();
+  });
+  startLoop("events", EVENTS_POLL_MS, async () => {
+    if (state.activeTab === "events") await pollEvents();
+  });
+}
+
+function wireQueue() {
+  const reload = $("#queue-reload");
+  if (reload) reload.addEventListener("click", loadQueue);
+  const clear = $("#queue-clear");
+  if (clear) clear.addEventListener("click", clearFinishedJobs);
+  const close = $("#job-drawer-close");
+  if (close) close.addEventListener("click", closeJobDrawer);
+  if (document.addEventListener)
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && drawerJobId !== null) closeJobDrawer();
+    });
+
+  const level = $("#events-level");
+  if (level) level.addEventListener("change", loadEvents);
+  const q = $("#events-q");
+  if (q) {
+    q.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        loadEvents();
+      }
+    });
+    q.addEventListener("change", loadEvents);
+  }
+  const follow = $("#events-follow");
+  if (follow) follow.addEventListener("change", renderEventsSummary);
+  const pause = $("#events-pause");
+  if (pause) pause.addEventListener("click", toggleEventsPause);
+  const reloadEvents = $("#events-reload");
+  if (reloadEvents) reloadEvents.addEventListener("click", loadEvents);
+
+  const save = $("#save-queue");
+  if (save)
+    save.addEventListener("click", () =>
+      saveConfigPatch({ queue: queueSettingsFromForm() }, "#queue-status").then((ok) => {
+        if (ok) buildForm($("#queue-form"), queueSchema, queueSettings());
+      })
+    );
+
+  renderQueueFilters();
+  renderEventTypeChips();
+}
+
+/* ------------------------------------------------------------------ */
 /* wiring                                                             */
 /* ------------------------------------------------------------------ */
 
 function showTab(name) {
+  state.activeTab = name;
   for (const section of document.querySelectorAll(".tab")) {
     section.classList.toggle("active", section.id === "tab-" + name);
   }
@@ -2031,10 +3048,17 @@ function showTab(name) {
   if (name === "history") loadHistory();
   if (name === "logs") loadLogs();
   if (name === "security") loadSecurity();
+  if (name === "queue") loadQueue();
+  if (name === "events") {
+    if (eventsView.loaded) pollEvents();
+    else loadEvents();
+  }
   if (name === "dashboard") {
     loadStatus();
     loadAutomatic();
     renderGetStarted();
+    loadDashboardQueue();
+    loadDashboardActivity();
   }
 }
 
@@ -2043,9 +3067,10 @@ function wire() {
     button.addEventListener("click", () => showTab(button.dataset.tab));
   }
 
-  $("#btn-search").addEventListener("click", () => runCurrentSelection(false));
+  $("#btn-search").addEventListener("click", () => runCurrentSelection(false, $("#btn-search")));
   $("#btn-grab").addEventListener("click", () => {
-    if (confirm("Search and grab the best release now?")) runCurrentSelection(true);
+    if (confirm("Search and grab the best release now?"))
+      runCurrentSelection(true, $("#btn-grab"));
   });
   $("#load-wanted").addEventListener("click", loadWanted);
 
@@ -2138,24 +3163,28 @@ function wire() {
     }
   });
 
-  $("#run-automatic").addEventListener("click", async () => {
-    setResult("#automatic-run-result", "running…", true);
-    try {
-      const summary = await api("/api/automatic/run", { method: "POST" });
-      setResult(
-        "#automatic-run-result",
-        `${summary.instances} instance(s) in ${summary.duration_ms} ms${summary.dry_run ? " (dry run)" : ""}`,
-        true
-      );
-      renderAutomaticResults(summary.results || []);
-      loadAutomatic();
-    } catch (e) {
-      setResult("#automatic-run-result", e.message, false);
-    }
-  });
+  /* A pass is a queued job like everything else; its summary is drawn
+     when it finishes. */
+  $("#run-automatic").addEventListener("click", () =>
+    runJob(
+      "automatic_pass",
+      {},
+      {
+        button: $("#run-automatic"),
+        statusNode: $("#automatic-run-result"),
+        describeDone: (summary) => automaticSummaryText(summary),
+        onResult: (summary) => {
+          renderAutomaticResults(summary.results || []);
+          loadAutomatic();
+        },
+      }
+    )
+  );
 
   $("#reload-history").addEventListener("click", loadHistory);
   $("#reload-logs").addEventListener("click", loadLogs);
+
+  wireQueue();
 
   $("#auth-save").addEventListener("click", async () => {
     const password = $("#auth-new-password").value;
@@ -2231,6 +3260,7 @@ function wire() {
 }
 
 async function main() {
+  state.activeTab = "dashboard";
   wire();
   await loadStatus();
   try {
@@ -2241,6 +3271,9 @@ async function main() {
   }
   loadSecurity();
   loadAutomatic();
+  loadDashboardQueue();
+  loadDashboardActivity();
+  startBackgroundPolling();
 }
 
 main();
@@ -2346,12 +3379,14 @@ function seasonOutcomeLine(s) {
   return `${season}: pack — ${what} (${state})`;
 }
 
-function renderSeerrResults(results) {
-  const container = $("#seerr-results");
-  if (!container) return;
+/* Draws into [target] (default: the Requests tab's last-pass table) and
+   returns it, so the job drawer can reuse it. */
+function renderSeerrResults(results, target) {
+  const container = target || $("#seerr-results");
+  if (!container) return container;
   if (!results.length) {
     container.replaceChildren();
-    return;
+    return container;
   }
   container.replaceChildren(
     el("h4", {}, "Last pass"),
@@ -2385,6 +3420,7 @@ function renderSeerrResults(results) {
       )
     )
   );
+  return container;
 }
 
 /* [statusNode] is the per-row <span> the outcome is written into. */
@@ -2521,12 +3557,13 @@ function closeSeerrPanel() {
   if (panel) panel.hidden = true;
 }
 
-/* The body of POST /api/seerr/requests/:id/select. A pending request carries
+/* The params of a seerr_select job (the body POST
+   /api/seerr/requests/:id/select used to take). A pending request carries
    approve:true, because the server refuses to select one otherwise. */
 function seerrSelectionBody(grab) {
   const pending = !!(seerrPanel && seerrPanel.request && seerrPanel.request.status === 1);
-  const body = { grab: !!grab, use_ai: $("#seerr-use-ai").checked, approve: pending };
-  const instruction = $("#seerr-instruction").value.trim();
+  const body = { grab: !!grab, use_ai: !!$("#seerr-use-ai").checked, approve: pending };
+  const instruction = ($("#seerr-instruction").value || "").trim();
   if (instruction) body.instruction = instruction;
   if (seerrPanel && seerrPanel.instanceId) body.instance_id = seerrPanel.instanceId;
   return body;
@@ -2603,38 +3640,23 @@ function renderSeerrTargets(payload) {
                   el(
                     "td",
                     {},
-                    el(
-                      "button",
-                      {
-                        class: "small",
-                        onclick: () =>
-                          runSeerrSelection(false, {
-                            instanceId: t.instance_id,
-                            seasonNumber: s.season_number,
-                          }),
-                      },
-                      "Search"
+                    actionButton("Search", "small", (b) =>
+                      runSeerrSelection(
+                        false,
+                        { instanceId: t.instance_id, seasonNumber: s.season_number },
+                        b
+                      )
                     ),
                     " ",
-                    el(
-                      "button",
-                      {
-                        class: "small primary",
-                        onclick: () => {
-                          if (
-                            !confirm(
-                              `Search and grab the best pack for season ${s.season_number} now?`
-                            )
-                          )
-                            return;
-                          runSeerrSelection(true, {
-                            instanceId: t.instance_id,
-                            seasonNumber: s.season_number,
-                          });
-                        },
-                      },
-                      "Grab"
-                    )
+                    actionButton("Grab", "small primary", (b) => {
+                      if (!confirm(`Search and grab the best pack for season ${s.season_number} now?`))
+                        return;
+                      runSeerrSelection(
+                        true,
+                        { instanceId: t.instance_id, seasonNumber: s.season_number },
+                        b
+                      );
+                    })
                   )
                 )
               )
@@ -2651,20 +3673,25 @@ function renderSeerrTargets(payload) {
 
 /* Draw a select response with the very components the Select page uses, so a
    request shows the same ranking, explanation and per-candidate Grab
-   buttons. */
-function renderSeerrSelection(payload) {
-  const box = $("#seerr-request-result");
+   buttons. [box] and [ctx] default to the request panel; the job drawer
+   passes its own. */
+function renderSeerrPayload(payload, box, ctx) {
   if (!box) return;
-  const ctx = { instanceId: payload.instance_id, setStatus: seerrPanelStatus };
+  const c = ctx || {
+    instanceId: payload.instance_id,
+    statusNode: $("#seerr-select-status"),
+    setStatus: seerrPanelStatus,
+  };
+  if (!c.instanceId) c.instanceId = payload.instance_id;
   if (payload.series) {
-    renderSeriesResult(payload.series, box, ctx);
+    renderSeriesResult(payload.series, box, c);
   } else if (payload.selection) {
-    renderSelectionResult(payload.selection, box, ctx);
+    renderSelectionResult(payload.selection, box, c);
   } else if (payload.selections) {
     box.replaceChildren(
       ...payload.selections.map((selection) => {
         const card = el("div", {});
-        renderSelectionResult(selection, card, ctx);
+        renderSelectionResult(selection, card, c);
         return el("details", {}, el("summary", {}, selectionLabel(selection)), card);
       })
     );
@@ -2673,37 +3700,45 @@ function renderSeerrSelection(payload) {
   }
 }
 
-async function runSeerrSelection(grab, overrides) {
-  if (!seerrPanel) return;
+function renderSeerrSelection(payload) {
+  renderSeerrPayload(payload, $("#seerr-request-result"));
+}
+
+/* Search (grab=false) or grab the open request, as a queued seerr_select
+   job. [overrides] picks the instance and, for TV, one season; [button] is
+   the button that asked, which shows the job's busy state. */
+function runSeerrSelection(grab, overrides, button) {
+  if (!seerrPanel) return null;
   const opts = overrides || {};
   if (opts.instanceId) seerrPanel.instanceId = opts.instanceId;
-  const body = seerrSelectionBody(grab);
-  if (opts.seasonNumber !== undefined) body.season_number = opts.seasonNumber;
-  seerrPanelStatus(
-    (grab ? "searching and grabbing…" : "searching…") + SEARCH_WAIT_HINT,
-    true
-  );
-  $("#seerr-request-result").replaceChildren();
-  try {
-    const payload = await api(`/api/seerr/requests/${seerrPanel.id}/select`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
-    if (!seerrPanel) return;
-    seerrPanel.request = payload.request || seerrPanel.request;
-    seerrPanel.instanceId = payload.instance_id || seerrPanel.instanceId;
-    renderSeerrPanelHeader(seerrPanel.request);
-    seerrPanelStatus(`${payload.kind}: ${payload.grabbed} grabbed`, grab ? payload.grabbed > 0 : true);
-    renderSeerrSelection(payload);
-    if (grab) {
-      loadHistory();
-      loadSeerrRequests();
-      loadSeerrStatus();
-    }
-  } catch (e) {
-    seerrPanelStatus(describeApiError(e), false);
-    toast(describeApiError(e), true);
-  }
+  const params = Object.assign({ request_id: seerrPanel.id }, seerrSelectionBody(grab));
+  if (opts.seasonNumber !== undefined) params.season_number = opts.seasonNumber;
+  const panelId = seerrPanel.id;
+  return runJob("seerr_select", params, {
+    button: button || (grab ? $("#seerr-panel-grab") : $("#seerr-panel-search")),
+    statusNode: $("#seerr-select-status"),
+    waitHint: SEARCH_WAIT_HINT,
+    describeDone: (payload) => `${payload.kind || "done"}: ${num(payload.grabbed, 0)} grabbed`,
+    isSuccess: (payload) => !grab || (payload.grabbed || 0) > 0,
+    onStart: (job) => {
+      if (!seerrPanel || seerrPanel.id !== panelId) return;
+      seerrPanel.jobId = job.id;
+      $("#seerr-request-result").replaceChildren();
+    },
+    isCurrent: (job) => !!seerrPanel && seerrPanel.id === panelId && seerrPanel.jobId === job.id,
+    onResult: (payload) => {
+      if (!seerrPanel) return;
+      seerrPanel.request = payload.request || seerrPanel.request;
+      seerrPanel.instanceId = payload.instance_id || seerrPanel.instanceId;
+      renderSeerrPanelHeader(seerrPanel.request);
+      renderSeerrSelection(payload);
+      if (grab) {
+        loadHistory();
+        loadSeerrRequests();
+        loadSeerrStatus();
+      }
+    },
+  });
 }
 
 /* Open the panel for one request: resolve it first (no search), then search
@@ -2741,7 +3776,7 @@ async function openSeerrRequest(request, options) {
       el("p", { class: "result bad" }, describeApiError(e))
     );
   }
-  if (opts.grab !== undefined) runSeerrSelection(opts.grab, {});
+  if (opts.grab !== undefined) runSeerrSelection(opts.grab, {}, null);
 }
 
 async function loadSeerrStatus() {
@@ -2819,24 +3854,22 @@ function wireSeerr() {
 
   const run = $("#seerr-run");
   if (run)
-    run.addEventListener("click", async () => {
-      setResult("#seerr-run-result", "running…", true);
-      try {
-        const summary = await api("/api/seerr/run", { method: "POST" });
-        setResult(
-          "#seerr-run-result",
-          `${summary.approved} approved, ${summary.fulfilled} ${
-            summary.dry_run ? "searched (dry run)" : "auto-grabbed"
-          } in ${summary.duration_ms} ms`,
-          true
-        );
-        renderSeerrResults(summary.results || []);
-        loadSeerrStatus();
-        loadSeerrRequests();
-      } catch (e) {
-        setResult("#seerr-run-result", e.message, false);
-      }
-    });
+    run.addEventListener("click", () =>
+      runJob(
+        "seerr_pass",
+        {},
+        {
+          button: run,
+          statusNode: $("#seerr-run-result"),
+          describeDone: (summary) => seerrPassSummaryText(summary),
+          onResult: (summary) => {
+            renderSeerrResults(summary.results || []);
+            loadSeerrStatus();
+            loadSeerrRequests();
+          },
+        }
+      )
+    );
 
   const reload = $("#seerr-reload");
   if (reload) reload.addEventListener("click", loadSeerrRequests);
@@ -2845,12 +3878,12 @@ function wireSeerr() {
   if (close) close.addEventListener("click", closeSeerrPanel);
 
   const search = $("#seerr-panel-search");
-  if (search) search.addEventListener("click", () => runSeerrSelection(false, {}));
+  if (search) search.addEventListener("click", () => runSeerrSelection(false, {}, search));
 
   const grab = $("#seerr-panel-grab");
   if (grab)
     grab.addEventListener("click", () => {
-      if (confirm("Search and grab the best release now?")) runSeerrSelection(true, {});
+      if (confirm("Search and grab the best release now?")) runSeerrSelection(true, {}, grab);
     });
 
   loadSeerrStatus();

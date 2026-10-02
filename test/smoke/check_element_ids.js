@@ -17,3 +17,30 @@ console.log("MISSING (referenced but never in html or created by js):", missing.
 const seen = {}, dupes = [];
 for (const m of html.matchAll(/id="([A-Za-z0-9_-]+)"/g)) { if (seen[m[1]]) dupes.push(m[1]); seen[m[1]] = 1; }
 console.log("duplicate ids in index.html:", dupes.length ? dupes : "none");
+// The queue and events UI needs these to exist in index.html.
+const required = [
+  "queue-badge",
+  "tab-queue",
+  "queue-filters",
+  "queue-list",
+  "queue-clear",
+  "queue-reload",
+  "tab-events",
+  "events-level",
+  "events-q",
+  "events-follow",
+  "events-pause",
+  "events-types",
+  "events-list",
+  "job-drawer",
+  "job-drawer-body",
+  "dashboard-queue",
+  "dashboard-activity",
+  "queue-form",
+  "save-queue",
+];
+const absent = required.filter((i) => !htmlIds.has(i));
+console.log("required queue/events ids missing:", absent.length ? absent : "none");
+if (/data-tab="queue"/.test(html) === false) absent.push("nav button data-tab=queue");
+if (/data-tab="events"/.test(html) === false) absent.push("nav button data-tab=events");
+process.exit(missing.length || dupes.length || absent.length ? 1 : 0);

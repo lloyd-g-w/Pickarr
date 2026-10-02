@@ -88,6 +88,14 @@ environment overrides.
    this** on any candidate row, or one of the **Grab** buttons (which search
    and grab in one go).
 
+   Every Search and Grab is **queued**: the button turns into *queued…* /
+   *running…*, a toast says *Queued #12 · Search · Some Movie* with a **View
+   queue** link, and the line next to the buttons follows the job — its place
+   in line, then what it is doing ("searching Radarr…"), then *done*. The
+   result is drawn in place when the job finishes, so you can start several
+   searches and grabs and watch them on the **Queue** tab. A failed job shows
+   its error there with a **Retry** button.
+
    The search box also takes ids, so anything you can paste works: a Sonarr
    series id, a Radarr movie id, a TMDB or TheTVDB id, or an IMDb `tt…` id.
    Every result, result card, request row and history row carries **Open in
@@ -96,6 +104,21 @@ environment overrides.
 6. **Let it run by itself (optional).** Enable *automatic* on an instance and
    automatic mode under *AI & Automatic*, leaving *Actually grab* off until the
    dry-run passes look right. See [automatic mode](#automatic-mode).
+7. **Watch what it does.** The **Queue** tab lists every job — yours,
+   automatic passes, Seerr passes and the work webhooks start — newest first,
+   with its status (a queued job shows its place in line), source, instance,
+   timings, progress and error. Filter by *All / Active / Succeeded /
+   Failed*; **View** opens a job's result with the same ranking, *Open in*
+   links and *Grab* buttons as the Search page; **Cancel** stops a queued or
+   running job; **Retry** queues a failed one again; **Clear finished** tidies
+   up. The tab button shows *2 running · 3 queued* from every page, and the
+   Dashboard shows the queue counts and the last ten events. The **Events**
+   tab is the structured log behind it: every job, search, grab attempt and
+   what Sonarr/Radarr answered, Seerr approvals, webhooks, sign-ins and
+   configuration changes, filterable by level, type and text; *Follow* adds
+   new events as they happen and *Pause* holds them back while you read. How
+   many jobs run at once (overall and per instance) is set under *AI &
+   Automatic → Queue*.
 
 For faster reactions, add a webhook in Sonarr/Radarr (Settings → Connect →
 Webhook) pointing at:
@@ -200,9 +223,10 @@ exactly like the Search page:
    the movie id for a Radarr request, or the series id and the requested
    seasons (with how many episodes each is missing) for a Sonarr one. A
    request Seerr has not pushed to the *arr yet says so instead.
-2. **Search** runs the full pipeline and shows the ranked candidates, the
-   rejected releases with their reasons, the explanation and the AI decision.
-   Nothing is grabbed.
+2. **Search** queues a job that runs the full pipeline, then shows the ranked
+   candidates, the rejected releases with their reasons, the explanation and
+   the AI decision. Nothing is grabbed. The status line follows the job; it
+   is also on the *Queue* tab.
 3. You can add an **instruction for this search** ("pick the highest quality
    regardless of size") and toggle **Use AI** for that run only. Neither is
    saved.
@@ -781,17 +805,21 @@ up the whole search. A timeout on the *read* side instead (the message names
 `network.arr_timeout_seconds`) usually means the instance is unreachable or
 overloaded rather than slow at searching.
 
-### Nothing happens when the page says "searching…"
+### Nothing happens when the page says "running…"
 
 That status line waits for the same interactive search, so a minute or two of
 apparent inactivity is normal. Pickarr itself imposes no response deadline
-beyond the search timeout above.
+beyond the search timeout above. If it stays *queued*, other jobs are ahead
+of it: the *Queue* tab shows what is running, and *AI & Automatic → Queue*
+raises how many jobs run at once (searches against one instance are limited
+separately, because each one queries every indexer).
 
 ### A grab did not work
 
 Every grab reports what it did. The result card shows one line under the
-badges, and the same text is in the *Logs* tab with the release title, the
-truncated guid and the `indexerId`:
+badges, the *Events* tab has a `grab.*` event for every attempt (filter on
+*grab*), and the *Logs* tab has the release title, the truncated guid and the
+`indexerId`:
 
 | Note | Meaning |
 | --- | --- |

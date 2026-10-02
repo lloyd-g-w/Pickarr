@@ -239,4 +239,61 @@ check("no old wording survives in a result card", () => {
   }
 });
 
-process.exit(failures ? 1 : 0);
+/* "Grab this" is a queued grab_release job: the click must POST /api/jobs
+   with the release's target, id, guid and indexer, and the status line must
+   say the job is queued. */
+(async () => {
+  const posted = [];
+  global.fetch = async (url, options) => {
+    const o = options || {};
+    const body = o.body ? JSON.parse(o.body) : undefined;
+    posted.push({ url, body });
+    const json =
+      url === "/api/jobs"
+        ? { job: { id: 7, kind: body.kind, status: "queued", position: 3, label: "Grab release" } }
+        : {};
+    return { status: url === "/api/jobs" ? 202 : 200, ok: true, text: async () => JSON.stringify(json) };
+  };
+  const status = document.querySelector("#select-status");
+  const payload = {
+    ...sample,
+    media: { ...sample.media, media_kind: "movie", media_id: 77 },
+    selected: { ...sample.selected, release: { ...sample.selected.release, guid: "g-1", indexer_id: 4 } },
+  };
+  payload.candidates = [payload.selected];
+  app.renderSelectionResult(payload, null, {
+    instanceId: "radarr",
+    statusNode: status,
+    setStatus: () => {},
+  });
+  const grab = (function find(node) {
+    if (!node || typeof node !== "object") return null;
+    if (node.tag === "button" && node.textContent === "Grab this") return node;
+    for (const c of node.children || []) {
+      const hit = find(c);
+      if (hit) return hit;
+    }
+    return null;
+  })(registry["#select-result"]);
+  grab.listeners.click();
+  for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+  check("Grab this queues a grab_release job", () => {
+    const job = posted.find((p) => p.url === "/api/jobs");
+    if (!job) throw new Error("no POST /api/jobs: " + JSON.stringify(posted.map((p) => p.url)));
+    const want = {
+      kind: "grab_release",
+      params: {
+        instance_id: "radarr",
+        target: { kind: "movie", media_id: 77 },
+        release_id: "r-winner",
+        guid: "g-1",
+        indexer_id: 4,
+      },
+      source: "ui",
+    };
+    if (JSON.stringify(job.body) !== JSON.stringify(want)) throw new Error(JSON.stringify(job.body));
+    if (!status.textContent.includes("#7 queued (position 3)")) throw new Error(status.textContent);
+    if (grab.textContent !== "queued…" || !grab.disabled) throw new Error("button not busy: " + grab.textContent);
+  });
+  process.exit(failures ? 1 : 0);
+})();

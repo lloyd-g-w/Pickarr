@@ -1,4 +1,4 @@
 (tests
- (names test_server test_queue)
+ (names test_server test_queue test_job_kinds)
  (package pickarr)
  (libraries pickarr_core pickarr_arr pickarr_server alcotest yojson lwt lwt.unix unix))

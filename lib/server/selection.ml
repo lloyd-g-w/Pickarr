@@ -221,21 +221,69 @@ let run_media ?(grab_allowed = fun (_ : Types.selection_result) -> true)
     (Types.selection_result, error) result Lwt.t =
   let cfg = App_state.config state in
   let client = App_state.client state inst in
+  let label = Store.media_label media in
+  let started = Unix.gettimeofday () in
+  Activity.set_title label;
+  Activity.progress "searching indexers\xe2\x80\xa6";
+  Activity.event ~instance_id:inst.inst_id ~media:label
+    ~data:
+      [
+        ("instance", `String inst.inst_name);
+        ("media_id", `Int media.media_id);
+        ("media_kind", `String media.media_kind);
+        ("grab", `Bool opts.grab);
+      ]
+    "search.started"
+    (Printf.sprintf "%s: searching for %s" inst.inst_name label);
   let* releases = Client.search_releases client media in
   match releases with
   | Error e ->
-      Lwt.return
-        (Error
-           (Arr_error
-              (Printf.sprintf "%s: release search failed for %s: %s" inst.inst_name
-                 (Store.media_label media) (Client.error_to_string e))))
+      let msg =
+        Printf.sprintf "%s: release search failed for %s: %s" inst.inst_name label
+          (Client.error_to_string e)
+      in
+      Activity.event ~level:Events.Error ~instance_id:inst.inst_id ~media:label
+        ~data:
+          [
+            ("error", `String (Client.error_to_string e));
+            ("duration_ms", `Int (int_of_float ((Unix.gettimeofday () -. started) *. 1000.)));
+          ]
+        "search.failed" msg;
+      Lwt.return (Error (Arr_error msg))
   | Ok releases ->
       Log_buffer.infof "%s: %d candidate release(s) for %s" inst.inst_name
-        (List.length releases) (Store.media_label media);
+        (List.length releases) label;
+      let ai = Option.value opts.use_ai ~default:cfg.llm.llm_enabled in
+      Activity.progress
+        (Printf.sprintf "scoring %d candidate(s)%s" (List.length releases)
+           (if ai && releases <> [] then " and asking the AI" else ""));
       let* result =
         Pipeline.run ~config:cfg ~instance:(Some inst) ~media ~releases
           ?instruction:opts.instruction ~llm:(llm_fn cfg) ?use_ai:opts.use_ai ()
       in
+      Activity.event ~instance_id:inst.inst_id ~media:label
+        ~data:
+          [
+            ("instance", `String inst.inst_name);
+            ("releases", `Int (List.length releases));
+            ("candidates", `Int (List.length result.candidates));
+            ("rejected", `Int (List.length result.rejected));
+            ("method", `String (Store.method_to_string result.method_));
+            ( "selected",
+              match result.selected with
+              | None -> `Null
+              | Some s -> `String s.scored.title );
+            ("duration_ms", `Int (int_of_float ((Unix.gettimeofday () -. started) *. 1000.)));
+          ]
+        "search.done"
+        (match result.selected with
+        | None ->
+            Printf.sprintf "%s: no usable release for %s (%d candidate(s), %d rejected)"
+              inst.inst_name label (List.length result.candidates)
+              (List.length result.rejected)
+        | Some s ->
+            Printf.sprintf "%s: best release for %s is %s (%s)" inst.inst_name label
+              s.scored.title (Store.method_to_string result.method_));
       (* Remember what this search offered: the per-candidate Grab buttons
          then grab the very release the user saw, without searching again. *)
       Search_cache.store state.searches ~instance_id:inst.inst_id ~media
@@ -314,6 +362,12 @@ let grab_release_media (state : App_state.t) (inst : Config.instance)
     | None -> (
         Log_buffer.infof "%s: no recent search for %s; searching before the grab"
           inst.inst_name label;
+        Activity.progress "searching indexers before the grab\xe2\x80\xa6";
+        Activity.event ~instance_id:inst.inst_id ~media:label
+          ~data:[ ("instance", `String inst.inst_name); ("reason", `String "no recent search") ]
+          "search.started"
+          (Printf.sprintf "%s: searching for %s before grabbing %s" inst.inst_name label
+             release_id);
         let* releases = Client.search_releases client media in
         match releases with
         | Error e ->
@@ -368,6 +422,7 @@ let grab_release_media (state : App_state.t) (inst : Config.instance)
                           (search again and retry)"
                          inst.inst_name release_id label))))
       | Some chosen ->
+          Activity.set_title chosen.Types.scored.Types.title;
           let base =
             {
               (Pipeline.empty_result ~media) with
@@ -591,6 +646,7 @@ let run_series ?grab_allowed (state : App_state.t) (inst : Config.instance)
       in
       Lwt.return (Error (arr_error_of_http ~msg e))
   | Ok (series, summaries) ->
+      Activity.set_title (Store.media_label series);
       let wanted =
         match seasons with
         | [] -> summaries
@@ -607,12 +663,17 @@ let run_series ?grab_allowed (state : App_state.t) (inst : Config.instance)
       Log_buffer.infof "%s: %s: %d season(s) to consider%s" inst.inst_name
         (Store.media_label series) (List.length wanted)
         (if opts.grab then "" else " (no grab requested)");
+      let season_count = List.length wanted in
+      let outer_prefix = Activity.get_prefix () in
       let* outcomes =
-        Lwt_list.map_s
-          (fun (s : Client.season_summary) ->
+        Lwt_list.mapi_s
+          (fun i (s : Client.season_summary) ->
             let missing = List.length s.missing_episode_ids in
             let total = s.total_episodes in
             let plan = season_plan policy ~missing ~total in
+            Activity.set_prefix
+              (Printf.sprintf "%sseason %d (%d/%d): " outer_prefix s.season_number (i + 1)
+                 season_count);
             Log_buffer.infof "%s: %s season %d: %d/%d missing -> %s" inst.inst_name
               (Store.media_label series) s.season_number missing total
               (season_plan_to_string plan);
@@ -666,6 +727,7 @@ let run_series ?grab_allowed (state : App_state.t) (inst : Config.instance)
                         }))
           wanted
       in
+      Activity.set_prefix outer_prefix;
       Lwt.return (Ok { series; seasons = outcomes })
 
 (** Resolve an instance by id, then {!run_season}. *)

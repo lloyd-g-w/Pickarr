@@ -131,6 +131,11 @@ http://pickarr:8484/api/webhook/<instance_id>?apikey=<your-api-key>
 the key from *Security* — the query parameter is needed because the *arr
 webhook UI cannot send headers.
 
+A webhook never does the work itself: it answers straight away and queues one
+job per item (a *Search*, or a *Grab* when automatic mode may grab, with
+automatic mode's confidence rule), so what it triggered shows up in the queue
+with source `webhook`, and a `webhook.received` event records the call.
+
 ### Seerr / Overseerr / Jellyseerr
 
 If requests come in through Seerr, point its webhook notification agent
@@ -147,7 +152,10 @@ Notification types:   Request Approved, Request Automatically Approved
 Pickarr reads `media.media_type`, `media.tmdbId` / `media.tvdbId` and the
 "Requested Seasons" extra, waits for Sonarr/Radarr to finish adding the item
 (retrying for a few minutes), then runs a selection for the monitored, missing
-movie or episodes and grabs when *Actually grab* is on. Pickarr still searches
+movie or episodes and grabs when *Actually grab* is on. Each lookup is a short
+*Seerr webhook* job in the queue (the first one 20 s after the notification,
+then one a minute for up to five attempts); the waiting in between happens
+outside the queue, so a pending lookup never holds up your own searches. Pickarr still searches
 and grabs through Sonarr/Radarr; Seerr is only a trigger. Requests for media
 that already has a file are ignored.
 
@@ -206,12 +214,19 @@ What happens per request:
 The webhook and the poller share one implementation (`lib/server/fulfil.ml`),
 so a request that arrives by webhook is fulfilled exactly the same way.
 
+Every poll is a *Seerr pass* job in the queue (source `seerr`), with progress
+per request ("request 2/4: …"); a pass that is still queued or running is never
+queued twice. Approvals, resolutions and the pass summary are recorded as
+`seerr.approved`, `seerr.resolved` and `seerr.pass` events.
+
 A request is retried at most once every six hours, so one that nothing can be
 found for does not occupy every pass. Requests whose media is already
 available are never touched.
 
 On the Requests tab, **Approve** approves in Seerr and does nothing else,
 while **Approve & grab** approves and then searches and grabs straight away.
+Approving through the API (`POST /api/seerr/requests/:id/approve`) queues a
+*fulfil* job for the request, so the answer does not wait for Sonarr/Radarr.
 
 ### Working a request by hand
 
@@ -543,6 +558,15 @@ All endpoints answer JSON. Errors are `{"error": "..."}` with 400 for bad
 input, 404 for an unknown instance or media id, 502 when Sonarr/Radarr or the
 LLM fails, and 500 for anything unexpected.
 
+The action endpoints (`/api/select/…`, `/api/grab/…`,
+`/api/seerr/requests/:id/select`, `/api/automatic/run`, `/api/seerr/run`) run
+their work as a queue job, so it is visible in the queue, and wait for it:
+they answer with the same body and status code as a direct call. Two identical
+requests made at the same time share one job. Send `X-Pickarr-Source: ui` to
+mark a job as started from the UI. If the job takes longer than three search
+timeouts plus a minute, the answer is `202 {"job": {...}}`; poll
+`GET /api/jobs/:id` for the result.
+
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET | `/health` | Liveness (never requires authentication) |
@@ -586,9 +610,9 @@ LLM fails, and 500 for anything unexpected.
 | GET | `/api/seerr/status` | Seerr poller status and last pass |
 | POST | `/api/seerr/test` | Test the saved Seerr connection |
 | GET | `/api/seerr/requests` | Requests (`?filter=pending\|processing\|approved\|available\|failed\|all`, `?take=`) |
-| POST | `/api/seerr/requests/:id/approve` | Approve in Seerr and fulfil immediately |
+| POST | `/api/seerr/requests/:id/approve` | Approve in Seerr and queue a fulfil job (answer has `job_id`) |
 | POST | `/api/seerr/requests/:id/decline` | Decline in Seerr |
-| POST | `/api/seerr/requests/:id/fulfil` | Search and grab for that request in the background (what the UI's *Grab* does synchronously; kept for scripts) |
+| POST | `/api/seerr/requests/:id/fulfil` | Queue a fulfil job for that request (answer has `job_id`; what the UI's *Grab* does synchronously; kept for scripts) |
 | POST | `/api/seerr/requests/:id/resolve` | What the request maps to in Sonarr/Radarr, without searching |
 | POST | `/api/seerr/requests/:id/select` | Run the pipeline for the request and answer like `/api/select` (`{grab?, instruction?, use_ai?, instance_id?, season_number?, approve?}`) |
 | POST | `/api/seerr/run` | Run a Seerr pass now |
@@ -673,6 +697,11 @@ Setup in short: enable automatic mode per instance, **disable RSS and automatic
 search on your indexers** while leaving interactive search enabled, then run
 with *Actually grab* off until the dry-run output looks right. If you use
 Prowlarr, verify after each sync that it has not re-enabled those flags.
+
+Each pass runs as an *Automatic pass* job in the queue (source `automatic`),
+with progress per item ("Sonarr item 3/5: …"). A pass that is still queued or
+running is not queued again, and *Run now* queues the same job. Every item and
+the pass summary are recorded as `automatic.item` and `automatic.pass` events.
 
 See **[docs/AUTOMATIC_MODE.md](docs/AUTOMATIC_MODE.md)** for the full rationale,
 the safety properties, and webhook setup.

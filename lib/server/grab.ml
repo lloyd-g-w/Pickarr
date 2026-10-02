@@ -107,6 +107,7 @@ let queue_check_delays = [ 1.0; 3.0 ]
 let verify_queue (state : App_state.t) (inst : Config.instance) (media : Types.media) :
     string option Lwt.t =
   let client = App_state.client state inst in
+  Activity.progress "checking the download queue\xe2\x80\xa6";
   let rec go = function
     | [] -> Lwt.return (Some "not seen in the download queue yet")
     | delay :: rest ->
@@ -157,11 +158,44 @@ let perform ?(verify_queue_state = true) (state : App_state.t) (inst : Config.in
     Printf.sprintf "guid %s indexerId %s" (short_guid r.Types.guid)
       (match r.Types.indexer_id with Some i -> string_of_int i | None -> "(none)")
   in
+  let release_data (r : Types.release) path =
+    [
+      ("instance", `String inst.inst_name);
+      ("release", `String r.Types.title);
+      ("indexer", match r.Types.indexer with Some i -> `String i | None -> `Null);
+      ("indexer_id", match r.Types.indexer_id with Some i -> `Int i | None -> `Null);
+      ("guid", `String (short_guid r.Types.guid));
+      ("path", `String path);
+    ]
+  in
+  let event ?level typ msg data =
+    Activity.event ?level ~instance_id:inst.inst_id ~media:label ~data typ msg
+  in
+  let sent (r : Types.release) path =
+    event "grab.sent"
+      (Printf.sprintf "%s: sending %s to %s (%s)" inst.inst_name r.Types.title
+         (Types.app_to_string inst.inst_app) path)
+      (release_data r path)
+  in
   let finish ~notes = function
     | Ok () ->
+        event "grab.accepted"
+          (Printf.sprintf "%s accepted %s for %s" inst.inst_name release.Types.title label)
+          (release_data release (String.concat "; " notes));
         let* queue_note =
           if verify_queue_state then verify_queue state inst media else Lwt.return None
         in
+        (match queue_note with
+        | None -> ()
+        | Some note ->
+            let warned =
+              String.length note >= 13 && String.sub note 0 13 = "queue warning"
+            in
+            event
+              ?level:(if warned then Some Events.Warn else None)
+              "grab.queue_check"
+              (Printf.sprintf "%s: %s: %s" inst.inst_name release.Types.title note)
+              [ ("instance", `String inst.inst_name); ("note", `String note) ]);
         let notes = notes @ Option.to_list queue_note in
         Log_buffer.infof "%s: grabbed %s for %s (%s)" inst.inst_name release.Types.title
           label (String.concat "; " notes);
@@ -170,6 +204,14 @@ let perform ?(verify_queue_state = true) (state : App_state.t) (inst : Config.in
         let msg = Client.error_to_string e in
         Log_buffer.errorf "%s: grab failed for %s (%s) for %s: %s" inst.inst_name
           release.Types.title (describe release) label msg;
+        let http =
+          match http_status_and_message e with
+          | Some (status, m) -> [ ("http_status", `Int status); ("arr_message", `String m) ]
+          | None -> [ ("http_status", `Null); ("arr_message", `String msg) ]
+        in
+        event ~level:Events.Error "grab.failed"
+          (Printf.sprintf "%s: grab failed for %s: %s" inst.inst_name release.Types.title msg)
+          (release_data release (String.concat "; " notes) @ http);
         Lwt.return { grabbed = false; error = Some msg; notes }
   in
   (* Identity problems are worth their own message: nothing can be grabbed
@@ -180,6 +222,9 @@ let perform ?(verify_queue_state = true) (state : App_state.t) (inst : Config.in
       let msg = Mapping.grab_error_message e in
       Log_buffer.errorf "%s: refusing to grab %s for %s: %s" inst.inst_name
         release.Types.title label msg;
+      event ~level:Events.Error "grab.failed"
+        (Printf.sprintf "%s: not sending %s: %s" inst.inst_name release.Types.title msg)
+        (release_data release "refused" @ [ ("http_status", `Null); ("arr_message", `String msg) ]);
       Lwt.return
         {
           grabbed = false;
@@ -189,6 +234,8 @@ let perform ?(verify_queue_state = true) (state : App_state.t) (inst : Config.in
   | Ok _ -> (
       Log_buffer.infof "%s: grabbing %s for %s (%s)" inst.inst_name release.Types.title
         label (describe release);
+      Activity.progress (Printf.sprintf "grabbing %s" release.Types.title);
+      sent release "direct";
       let* first = Client.grab client media release in
       match first with
       | Ok () -> finish ~notes:[ "grabbed directly" ] (Ok ())
@@ -200,6 +247,12 @@ let perform ?(verify_queue_state = true) (state : App_state.t) (inst : Config.in
                 "%s: %s is no longer in %s's release cache; searching again and retrying"
                 inst.inst_name release.Types.title
                 (Types.app_to_string inst.inst_app);
+              event ~level:Events.Warn "grab.retry"
+                (Printf.sprintf "%s: %s left the release cache; searching again" inst.inst_name
+                   release.Types.title)
+                (release_data release "cache miss: search again"
+                @ [ ("arr_message", `String (Client.error_to_string e)) ]);
+              Activity.progress "searching again (release left the cache)\xe2\x80\xa6";
               let* refreshed = research () in
               match refreshed with
               | Error m ->
@@ -219,6 +272,7 @@ let perform ?(verify_queue_state = true) (state : App_state.t) (inst : Config.in
                       ]
                     (Error e)
               | Ok (Some fresh) ->
+                  sent fresh "searched again";
                   let* second = Client.grab client media fresh in
                   finish ~notes:[ "searched again, then grabbed" ] second)
           | Mapping.Needs_override ->
@@ -227,6 +281,12 @@ let perform ?(verify_queue_state = true) (state : App_state.t) (inst : Config.in
                 inst.inst_name
                 (Types.app_to_string inst.inst_app)
                 release.Types.title label;
+              event ~level:Events.Warn "grab.retry"
+                (Printf.sprintf "%s: retrying %s with shouldOverride" inst.inst_name
+                   release.Types.title)
+                (release_data release "shouldOverride"
+                @ [ ("arr_message", `String (Client.error_to_string e)) ]);
+              sent release "shouldOverride";
               let* second = Client.grab_override client media release ~episode_ids in
               finish ~notes:[ "retried with shouldOverride" ] second))
 

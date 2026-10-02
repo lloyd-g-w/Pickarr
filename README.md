@@ -568,6 +568,13 @@ LLM fails, and 500 for anything unexpected.
 | POST | `/api/seerr/requests/:id/resolve` | What the request maps to in Sonarr/Radarr, without searching |
 | POST | `/api/seerr/requests/:id/select` | Run the pipeline for the request and answer like `/api/select` (`{grab?, instruction?, use_ai?, instance_id?, season_number?, approve?}`) |
 | POST | `/api/seerr/run` | Run a Seerr pass now |
+| POST | `/api/jobs` | Queue a job `{kind, params, source?}` → `202 {"job":…}` (an identical queued/running job is returned instead of a duplicate) |
+| GET | `/api/jobs` | Jobs, newest first, plus counts (`?status=queued,running` or `active`/`finished`, `?kind=`, `?limit=100`, `?include=result`) |
+| GET | `/api/jobs/:id` | One job, including its result |
+| POST | `/api/jobs/:id/cancel` | Cancel a queued or running job (409 once finished) |
+| POST | `/api/jobs/:id/retry` | Queue a failed or cancelled job again (409 otherwise) |
+| DELETE | `/api/jobs?status=finished` | Remove succeeded, failed and cancelled jobs from the list → `{"cleared":n}` |
+| GET | `/api/events` | Event log, ascending (`?since_id=` for polling, `?limit=`, `?type=<prefix>`, `?level=info\|warn\|error`, `?job_id=`, `?q=<text>`) → `{"events":[…],"last_id":n}` |
 
 Requests below assume no authentication; add `-H 'X-Api-Key: <key>'` when an
 API key is configured.

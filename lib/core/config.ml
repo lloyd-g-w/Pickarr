@@ -175,6 +175,17 @@ type network = {
           listings, which are slow on large libraries. Default 180. *)
 }
 
+(** The server-side job queue that runs searches, grabs and background
+    passes (see lib/server/jobs.ml). *)
+type queue = {
+  queue_workers : int;  (** Jobs running at the same time. Default 2, 1..8. *)
+  queue_per_instance : int;
+      (** Jobs running at the same time against one instance. Default 1,
+          1..4. *)
+  queue_keep_finished : int;
+      (** Finished jobs kept in the list. Default 500, 50..5000. *)
+}
+
 (** Seerr / Overseerr / Jellyseerr request integration. *)
 type seerr = {
   seerr_enabled : bool;
@@ -199,6 +210,7 @@ type t = {
   seasons : seasons;
   seerr : seerr;
   network : network;
+  queue : queue;
   log_level : string;
 }
 
@@ -304,6 +316,8 @@ let default_seasons =
 
 let default_network = { arr_timeout_seconds = 30; arr_search_timeout_seconds = 180 }
 
+let default_queue = { queue_workers = 2; queue_per_instance = 1; queue_keep_finished = 500 }
+
 let default_seerr =
   {
     seerr_enabled = false;
@@ -328,6 +342,7 @@ let default =
     seasons = default_seasons;
     seerr = default_seerr;
     network = default_network;
+    queue = default_queue;
     log_level = "info";
   }
 
@@ -691,6 +706,24 @@ let network_of_yojson ?(d = default_network) (j : J.t) : network =
       clamp_timeout (get_int "arr_search_timeout_seconds" d.arr_search_timeout_seconds j);
   }
 
+let clamp_int ~lo ~hi (v : int) : int = min hi (max lo v)
+
+let queue_to_yojson (q : queue) : J.t =
+  `Assoc
+    [
+      ("workers", `Int q.queue_workers);
+      ("per_instance", `Int q.queue_per_instance);
+      ("keep_finished", `Int q.queue_keep_finished);
+    ]
+
+let queue_of_yojson ?(d = default_queue) (j : J.t) : queue =
+  {
+    queue_workers = clamp_int ~lo:1 ~hi:8 (get_int "workers" d.queue_workers j);
+    queue_per_instance = clamp_int ~lo:1 ~hi:4 (get_int "per_instance" d.queue_per_instance j);
+    queue_keep_finished =
+      clamp_int ~lo:50 ~hi:5000 (get_int "keep_finished" d.queue_keep_finished j);
+  }
+
 let seerr_to_yojson (s : seerr) : J.t =
   `Assoc
     [
@@ -742,6 +775,7 @@ let to_yojson ?(redact = false) (c : t) : J.t =
       ("seasons", seasons_to_yojson c.seasons);
       ("seerr", seerr_to_yojson { c.seerr with seerr_api_key = red c.seerr.seerr_api_key });
       ("network", network_to_yojson c.network);
+      ("queue", queue_to_yojson c.queue);
       ("log_level", `String c.log_level);
     ]
 
@@ -770,6 +804,7 @@ let of_yojson ?(d = default) (j : J.t) : (t, string) result =
           seasons = seasons_of_yojson ~d:d.seasons (sub "seasons");
           seerr = seerr_of_yojson ~d:d.seerr (sub "seerr");
           network = network_of_yojson ~d:d.network (sub "network");
+          queue = queue_of_yojson ~d:d.queue (sub "queue");
           log_level = get_str "log_level" d.log_level j;
         }
 
@@ -826,6 +861,8 @@ let patch (existing : t) (j : J.t) : (t, string) result =
     - ARR_TIMEOUT_SECONDS (quick Sonarr/Radarr calls, default 30)
     - ARR_SEARCH_TIMEOUT_SECONDS (release searches and library listings,
       default 180; raise it when your indexers are slow)
+    - QUEUE_WORKERS (jobs running at once, 1..8, default 2),
+      QUEUE_PER_INSTANCE (jobs running at once per instance, 1..4, default 1)
     - LOG_LEVEL
 
     [getenv] is injected for testability. *)
@@ -955,6 +992,13 @@ let apply_env ?(getenv = Sys.getenv_opt) (c : t) : t =
         arr_search_timeout_seconds =
           clamp_timeout
             (int_env "ARR_SEARCH_TIMEOUT_SECONDS" c.network.arr_search_timeout_seconds);
+      };
+    queue =
+      {
+        c.queue with
+        queue_workers = clamp_int ~lo:1 ~hi:8 (int_env "QUEUE_WORKERS" c.queue.queue_workers);
+        queue_per_instance =
+          clamp_int ~lo:1 ~hi:4 (int_env "QUEUE_PER_INSTANCE" c.queue.queue_per_instance);
       };
     log_level = str_env "LOG_LEVEL" c.log_level;
   }

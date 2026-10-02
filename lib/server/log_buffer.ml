@@ -30,6 +30,12 @@ let push level message =
 
 let emit level message =
   push level message;
+  (* Warnings and errors also become structured events (log.warn /
+     log.error) so the Events view shows them next to job and grab events. *)
+  (match level with
+  | Warning -> Events.emit ~level:Events.Warn "log.warn" message
+  | Error -> Events.emit ~level:Events.Error "log.error" message
+  | Debug | Info -> ());
   match level with
   | Debug -> log.debug (fun l -> l "%s" message)
   | Info -> log.info (fun l -> l "%s" message)

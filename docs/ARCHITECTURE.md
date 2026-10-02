@@ -284,11 +284,19 @@ POST /api/seerr/requests/:id/select      run the pipeline for the request, answe
 POST /api/seerr/run                      run a Seerr pass now
 GET  /api/automatic/status               scheduler status
 POST /api/automatic/run                  trigger a scheduler pass now
+POST   /api/jobs                         queue a job {kind, params, source?} -> 202 {"job"}
+GET    /api/jobs                         ?status=queued,running|active|finished&kind=&limit=100&include=result
+GET    /api/jobs/:id                     one job incl. result
+POST   /api/jobs/:id/cancel              cancel queued/running (409 when finished)
+POST   /api/jobs/:id/retry               new job for a failed/cancelled one (409 otherwise)
+DELETE /api/jobs?status=finished         clear finished jobs -> {"cleared":n}
+GET    /api/events                       ?since_id=&limit=&type=<prefix>&level=&job_id=&q= -> {"events","last_id"}
 ```
 
 Persistence: `DATA_DIR` (default `/data`, fallback `./data`) with
-`config.json` and `history.jsonl`. Environment variables override the stored
-config on startup (`Config.apply_env`).
+`config.json`, `history.jsonl`, `jobs.json` and `events.jsonl` (+
+`events.1.jsonl`). Environment variables override the stored config on
+startup (`Config.apply_env`).
 
 ### UI wording
 
@@ -407,3 +415,63 @@ the body carries `approve: true`, in which case it is approved first and the
 attempt, so searching never starves the poller. The pure parts
 (`select_body_of_json`, `pending_decision`, `nothing_reason`) are unit
 tested.
+
+## Job queue and event log
+
+Every action that talks to Sonarr/Radarr/Seerr runs as a **job** in one
+server-side queue (`lib/server/jobs.ml`), and everything that happens is
+recorded as a structured **event** (`lib/server/events.ml`). The UI lists
+jobs live and shows the event log.
+
+### Jobs
+
+* A job kind is registered with `Jobs.register kind parse`, where `parse`
+  synchronously validates the params (no I/O) and returns a `prepared`
+  record: label, instance id, optional dedupe key and the `run` function.
+  The real kinds (`search`, `grab_best`, `grab_release`, `seerr_select`,
+  `automatic_pass`, `seerr_pass`, `seerr_webhook`) live in
+  `lib/server/job_kinds.ml` and are registered by `Job_kinds.register_all ()`
+  **before** `Jobs.start`, because queued jobs restored after a restart are
+  re-prepared through their kind.
+* `Jobs.enqueue state ~source kind params` validates and queues; while a
+  queued or running job has the same dedupe key, that job is returned
+  instead of a duplicate.
+* Scheduling is FIFO by id, read live from `config.queue`: at most
+  `workers` (1..8, default 2) jobs run at once, at most `per_instance`
+  (1..4, default 1) of them against one instance id. A job held back by its
+  instance limit does not hold back later jobs for other instances. A
+  dispatcher loop wakes on a condition (enqueue / finish / cancel) and once a
+  second, so a config change applies without a restart.
+* A running job gets a `ctx`: `progress` (also a `job.progress` event, at
+  most one per second), `set_label`, and `event` (an `Events.emit` tagged
+  with the job and instance id).
+* Outcomes: `Ok result` → succeeded; `Error msg` or an exception → failed;
+  `Jobs.cancel` on a running job cancels its promise *and* marks it
+  cancelled at once, so a runner that ignores cancellation never leaves a
+  job stuck "running". `Jobs.wait` resolves every waiter when the job
+  finishes. Retry creates a new job (`attempt + 1`, `retry_of`).
+* `DATA_DIR/jobs.json` is a debounced snapshot (≤ 1 write/s, temp file +
+  rename). Results are kept for the newest 50 finished jobs only. On start,
+  running jobs become failed ("interrupted by restart", `job.interrupted`),
+  queued jobs are queued again, ids continue. Finished jobs beyond
+  `keep_finished` (50..5000, default 500) are dropped oldest first.
+* `QUEUE_WORKERS` / `QUEUE_PER_INSTANCE` override the stored limits.
+* With `PICKARR_TEST_JOBS=1` a hidden `test_sleep` kind exists for
+  `test/smoke/queue_core_e2e.sh`.
+
+### Events
+
+* `Events.emit ?level ?job_id ?instance_id ?media ?data type message` never
+  raises or blocks. Events get monotonic ids that continue across restarts,
+  are kept in memory (last 5000) and appended to `DATA_DIR/events.jsonl` by
+  a single background writer (no interleaved lines), rotated to
+  `events.1.jsonl` at 10 MB.
+* `Events.init ~data_dir` runs first in `Server.main`; anything emitted
+  before it is renumbered and written afterwards.
+* `Log_buffer` mirrors every warning/error line as `log.warn` / `log.error`
+  (Events itself never depends on Log_buffer).
+* Types are dotted: `job.*`, `search.*`, `grab.*`, `seerr.*`,
+  `automatic.*`, `webhook.received`, `config.updated`, `auth.*`,
+  `instance.tested`, `llm.tested`, `log.*`.
+* `GET /api/events?since_id=N` is the polling form: events with id > N,
+  ascending; without `since_id` the most recent `limit` events.

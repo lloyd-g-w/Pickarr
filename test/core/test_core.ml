@@ -1602,6 +1602,81 @@ let test_network_clamps () =
   Alcotest.(check int) "search timeout clamped down" 900
     high.Config.arr_search_timeout_seconds
 
+(* ------------------------------------------------------------------ *)
+(* Queue config                                                        *)
+(* ------------------------------------------------------------------ *)
+
+let queue_of_json s =
+  match Config.of_yojson (Yojson.Safe.from_string s) with
+  | Ok c -> c.Config.queue
+  | Error e -> Alcotest.fail e
+
+let test_queue_defaults () =
+  let q = Config.default.Config.queue in
+  Alcotest.(check int) "workers" 2 q.Config.queue_workers;
+  Alcotest.(check int) "per instance" 1 q.Config.queue_per_instance;
+  Alcotest.(check int) "keep finished" 500 q.Config.queue_keep_finished;
+  Alcotest.(check bool) "default_queue is the default" true (q = Config.default_queue)
+
+let test_queue_round_trip () =
+  let q = queue_of_json {|{"queue":{"workers":4,"per_instance":2,"keep_finished":1000}}|} in
+  Alcotest.(check int) "workers" 4 q.Config.queue_workers;
+  Alcotest.(check int) "per instance" 2 q.Config.queue_per_instance;
+  Alcotest.(check int) "keep" 1000 q.Config.queue_keep_finished;
+  let encoded = Config.to_yojson { Config.default with Config.queue = q } in
+  (match encoded with
+  | `Assoc l -> (
+      match List.assoc_opt "queue" l with
+      | Some (`Assoc q) ->
+          Alcotest.(check (list string)) "json keys" [ "workers"; "per_instance"; "keep_finished" ]
+            (List.map fst q)
+      | _ -> Alcotest.fail "queue section missing")
+  | _ -> Alcotest.fail "config is not an object");
+  (match Config.of_yojson encoded with
+  | Ok c -> Alcotest.(check bool) "decodes back" true (c.Config.queue = q)
+  | Error e -> Alcotest.fail e);
+  (* Missing section / missing keys keep the defaults; patch keeps the rest. *)
+  Alcotest.(check bool) "missing section" true (queue_of_json {|{}|} = Config.default_queue);
+  let partial = queue_of_json {|{"queue":{"workers":3}}|} in
+  Alcotest.(check int) "partial workers" 3 partial.Config.queue_workers;
+  Alcotest.(check int) "partial keeps per instance" 1 partial.Config.queue_per_instance;
+  match Config.patch { Config.default with Config.queue = q } (Yojson.Safe.from_string {|{"queue":{"per_instance":3}}|}) with
+  | Ok c ->
+      Alcotest.(check int) "patched" 3 c.Config.queue.Config.queue_per_instance;
+      Alcotest.(check int) "untouched" 4 c.Config.queue.Config.queue_workers
+  | Error e -> Alcotest.fail e
+
+let test_queue_clamps () =
+  let low = queue_of_json {|{"queue":{"workers":0,"per_instance":-1,"keep_finished":1}}|} in
+  Alcotest.(check int) "workers >= 1" 1 low.Config.queue_workers;
+  Alcotest.(check int) "per instance >= 1" 1 low.Config.queue_per_instance;
+  Alcotest.(check int) "keep >= 50" 50 low.Config.queue_keep_finished;
+  let high = queue_of_json {|{"queue":{"workers":99,"per_instance":99,"keep_finished":999999}}|} in
+  Alcotest.(check int) "workers <= 8" 8 high.Config.queue_workers;
+  Alcotest.(check int) "per instance <= 4" 4 high.Config.queue_per_instance;
+  Alcotest.(check int) "keep <= 5000" 5000 high.Config.queue_keep_finished
+
+let test_queue_env_override () =
+  let env = function
+    | "QUEUE_WORKERS" -> Some "5"
+    | "QUEUE_PER_INSTANCE" -> Some "2"
+    | _ -> None
+  in
+  let c = Config.apply_env ~getenv:env Config.default in
+  Alcotest.(check int) "workers from env" 5 c.Config.queue.Config.queue_workers;
+  Alcotest.(check int) "per instance from env" 2 c.Config.queue.Config.queue_per_instance;
+  let odd = function
+    | "QUEUE_WORKERS" -> Some "100"
+    | "QUEUE_PER_INSTANCE" -> Some "lots"
+    | _ -> None
+  in
+  let c = Config.apply_env ~getenv:odd Config.default in
+  Alcotest.(check int) "env clamped" 8 c.Config.queue.Config.queue_workers;
+  Alcotest.(check int) "garbage keeps the stored value" 1 c.Config.queue.Config.queue_per_instance;
+  let stored = { Config.default with Config.queue = { Config.default_queue with queue_workers = 3 } } in
+  let c = Config.apply_env ~getenv:(fun _ -> None) stored in
+  Alcotest.(check int) "nothing set keeps stored" 3 c.Config.queue.Config.queue_workers
+
 let test_network_env_override () =
   let env = function
     | "ARR_TIMEOUT_SECONDS" -> Some "20"
@@ -1768,6 +1843,13 @@ let () =
             test_network_missing_section_keeps_defaults;
           Alcotest.test_case "clamps" `Quick test_network_clamps;
           Alcotest.test_case "env override" `Quick test_network_env_override;
+        ] );
+      ( "queue config",
+        [
+          Alcotest.test_case "defaults" `Quick test_queue_defaults;
+          Alcotest.test_case "round trip" `Quick test_queue_round_trip;
+          Alcotest.test_case "clamps" `Quick test_queue_clamps;
+          Alcotest.test_case "env override" `Quick test_queue_env_override;
         ] );
       ( "rules_proposal",
         [

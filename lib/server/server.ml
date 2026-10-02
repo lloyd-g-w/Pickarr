@@ -97,12 +97,19 @@ let main () =
       exit 1
   | Ok state ->
       let cfg = App_state.config state in
+      (* The event log first, so every later event lands in events.jsonl
+         (anything emitted earlier is renumbered and written too). *)
+      Lwt_main.run (Events.init ~data_dir:(Store.data_dir state.App_state.store));
       Dream.initialize_log ~level:(log_level_of_string cfg.log_level) ();
       (* Apply the read timeout before anything talks to Sonarr/Radarr; every
          later change goes through App_state.client. *)
       Pickarr_arr.Http.timeout_seconds :=
         (Pickarr_arr.Client.timeouts_of_network cfg.network).quick_seconds;
       describe state;
+      (* Job kinds must be registered before the queue starts: queued jobs
+         restored from jobs.json are re-prepared through their kind. *)
+      Job_kinds.register_all ();
+      Jobs.start state;
       Automatic.start state;
       Seerr_sync.start state;
       Dream.run ~interface:(env_host ()) ~port:(env_port ()) ~greeting:false

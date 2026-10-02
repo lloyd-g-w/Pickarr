@@ -980,6 +980,142 @@ let static_handler (state : App_state.t) =
   | None -> fun _request -> Dream.empty `Not_Found
 
 (* ------------------------------------------------------------------ *)
+(* Job queue and events (BEGIN queue-core block)                       *)
+(* ------------------------------------------------------------------ *)
+
+let job_id_param request =
+  match int_of_string_opt (String.trim (Dream.param request "id")) with
+  | Some i when i > 0 -> Ok i
+  | _ -> Error "job id must be a positive integer"
+
+(* "queued,running", plus the shorthands "active" and "finished". *)
+let job_statuses_of_query (raw : string) : (Jobs.status list, string) result =
+  let parts =
+    String.split_on_char ',' raw |> List.map String.trim |> List.filter (fun s -> s <> "")
+  in
+  List.fold_left
+    (fun acc part ->
+      match acc with
+      | Error _ -> acc
+      | Ok l -> (
+          match String.lowercase_ascii part with
+          | "active" -> Ok (l @ [ Jobs.Queued; Jobs.Running ])
+          | "finished" | "done" -> Ok (l @ [ Jobs.Succeeded; Jobs.Failed; Jobs.Cancelled ])
+          | "all" -> Ok l
+          | other -> (
+              match Jobs.status_of_string other with
+              | Some st -> Ok (l @ [ st ])
+              | None -> Error (Printf.sprintf "unknown job status %S" part))))
+    (Ok []) parts
+
+let post_job (state : App_state.t) request =
+  let* body = json_body request in
+  match body with
+  | Error e -> error_json `Bad_Request e
+  | Ok body -> (
+      match string_field "kind" body with
+      | None -> error_json `Bad_Request "kind is required"
+      | Some kind -> (
+          let params =
+            match body with
+            | `Assoc fields -> (
+                match List.assoc_opt "params" fields with
+                | None | Some `Null -> `Assoc []
+                | Some p -> p)
+            | _ -> `Assoc []
+          in
+          let source = Option.value (string_field "source" body) ~default:"api" in
+          match Jobs.enqueue state ~source kind params with
+          | Ok job -> respond_json ~status:`Accepted (`Assoc [ ("job", job) ])
+          | Error e -> error_json `Bad_Request e))
+
+let get_jobs (_ : App_state.t) request =
+  let statuses =
+    match Dream.query request "status" with
+    | None -> Ok []
+    | Some raw -> job_statuses_of_query raw
+  in
+  match statuses with
+  | Error e -> error_json `Bad_Request e
+  | Ok statuses ->
+      let limit = Option.value (int_query request "limit") ~default:100 in
+      let include_result =
+        match Dream.query request "include" with
+        | Some v -> List.mem "result" (List.map String.trim (String.split_on_char ',' v))
+        | None -> false
+      in
+      respond_json
+        (Jobs.list ~statuses ?kind:(Dream.query request "kind") ~limit ~include_result ())
+
+let get_job (_ : App_state.t) request =
+  match job_id_param request with
+  | Error e -> error_json `Bad_Request e
+  | Ok id -> (
+      match Jobs.get id with
+      | None -> error_json `Not_Found (Printf.sprintf "no job %d" id)
+      | Some job -> respond_json (`Assoc [ ("job", job) ]))
+
+let cancel_job (_ : App_state.t) request =
+  match job_id_param request with
+  | Error e -> error_json `Bad_Request e
+  | Ok id -> (
+      match Jobs.get id with
+      | None -> error_json `Not_Found (Printf.sprintf "no job %d" id)
+      | Some _ -> (
+          match Jobs.cancel id with
+          | Ok job -> respond_json (`Assoc [ ("job", job) ])
+          | Error e -> error_json `Conflict e))
+
+let retry_job (state : App_state.t) request =
+  match job_id_param request with
+  | Error e -> error_json `Bad_Request e
+  | Ok id -> (
+      match Jobs.get id with
+      | None -> error_json `Not_Found (Printf.sprintf "no job %d" id)
+      | Some _ -> (
+          match Jobs.retry state id with
+          | Ok job -> respond_json ~status:`Accepted (`Assoc [ ("job", job) ])
+          | Error e -> error_json `Conflict e))
+
+let delete_jobs (_ : App_state.t) request =
+  match Dream.query request "status" with
+  | None -> respond_json (`Assoc [ ("cleared", `Int (Jobs.clear_finished ())) ])
+  | Some s when List.mem (String.lowercase_ascii (String.trim s)) [ "finished"; "done" ] ->
+      respond_json (`Assoc [ ("cleared", `Int (Jobs.clear_finished ())) ])
+  | Some s ->
+      error_json `Bad_Request
+        (Printf.sprintf "only finished jobs can be cleared (status=finished), not %S" s)
+
+let get_events (_ : App_state.t) request =
+  let level =
+    match Dream.query request "level" with
+    | None -> Ok None
+    | Some l when String.trim l = "" -> Ok None
+    | Some l -> (
+        match Events.level_of_string l with
+        | Some lv -> Ok (Some lv)
+        | None -> Error (Printf.sprintf "unknown level %S (info, warn or error)" l))
+  in
+  match level with
+  | Error e -> error_json `Bad_Request e
+  | Ok min_level ->
+      let events, last_id =
+        Events.query
+          ?since_id:(int_query request "since_id")
+          ?limit:(int_query request "limit")
+          ?type_prefix:(Dream.query request "type")
+          ?min_level
+          ?job_id:(int_query request "job_id")
+          ?text:(Dream.query request "q")
+          ()
+      in
+      respond_json (`Assoc [ ("events", `List events); ("last_id", `Int last_id) ])
+
+(* ------------------------------------------------------------------ *)
+(* (END queue-core block)                                              *)
+(* ------------------------------------------------------------------ *)
+
+(* ------------------------------------------------------------------ *)
 (* Router                                                              *)
 (* ------------------------------------------------------------------ *)
 
@@ -1103,6 +1239,15 @@ let router (state : App_state.t) =
           Dream.post "/seerr/requests/:id/select"
             (guard "POST /api/seerr/requests/:id/select" (seerr_select state));
           Dream.post "/seerr/run" (guard "POST /api/seerr/run" (seerr_run state));
+          (* BEGIN queue-core routes: job queue and event log *)
+          Dream.post "/jobs" (guard "POST /api/jobs" (post_job state));
+          Dream.get "/jobs" (guard "GET /api/jobs" (get_jobs state));
+          Dream.delete "/jobs" (guard "DELETE /api/jobs" (delete_jobs state));
+          Dream.get "/jobs/:id" (guard "GET /api/jobs/:id" (get_job state));
+          Dream.post "/jobs/:id/cancel" (guard "POST /api/jobs/:id/cancel" (cancel_job state));
+          Dream.post "/jobs/:id/retry" (guard "POST /api/jobs/:id/retry" (retry_job state));
+          Dream.get "/events" (guard "GET /api/events" (get_events state));
+          (* END queue-core routes *)
         ];
     ]
 

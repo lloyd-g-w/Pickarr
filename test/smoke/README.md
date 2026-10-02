@@ -153,6 +153,21 @@ node test/smoke/render_seerr_panel.js
 node test/smoke/check_element_ids.js
 ```
 
+## Job queue and event log
+
+```bash
+bash test/smoke/queue_core_e2e.sh
+```
+
+Starts the binary with `PICKARR_TEST_JOBS=1` (a hidden `test_sleep` job kind)
+and `QUEUE_WORKERS=1`, then drives `/api/jobs` and `/api/events`: queue
+positions and counts, dedupe, cancelling a queued and a running job (the
+worker slot is freed), failure and exception outcomes, retry, validation
+errors, event polling with `since_id` and the type/level/job/text filters,
+clearing finished jobs, and a restart on the same data dir (running job →
+failed "interrupted by restart", queued jobs run, job and event ids
+continue). Ports 19600-19601.
+
 ## Fakes
 
 | File | Serves |
